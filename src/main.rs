@@ -12,6 +12,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use signet::{
+    agent::{AgentConfig, AgentMode, AgentSettings, run_agent},
     authority::{BootstrapArtifacts, BootstrapConfig, SigningAuthority, bootstrap},
     controller::{ControllerError, Processor, run_until},
     policy::{Policy, ServiceAccount},
@@ -21,6 +22,8 @@ use time::OffsetDateTime;
 const DEFAULT_SIGNER_NAME: &str = "example.com/signet";
 const DEFAULT_CA_CERTIFICATE: &str = "/var/run/signet-ca/ca.crt";
 const DEFAULT_CA_PRIVATE_KEY: &str = "/var/run/signet-ca/ca.key";
+const DEFAULT_AGENT_CA_BUNDLE: &str = "/var/run/interlink/ca-bundle.pem";
+const DEFAULT_AGENT_OUTPUT_DIR: &str = "/var/run/interlink/identity";
 type ControllerFuture<'a> =
     Pin<&'a mut (dyn Future<Output = std::result::Result<(), ControllerError>> + Send)>;
 type IoFuture<'a> = Pin<&'a mut (dyn Future<Output = io::Result<()>> + Send)>;
@@ -40,6 +43,8 @@ struct Cli {
 enum Command {
     /// Generate persistent Ed25519 CA material without overwriting existing files.
     Bootstrap(BootstrapArgs),
+    /// Acquire and renew this workload's Interlink certificate.
+    Agent(AgentArgs),
     /// Watch Kubernetes CSRs, authorize identities, and issue certificates.
     Run(RunArgs),
 }
@@ -52,6 +57,50 @@ struct BootstrapArgs {
     common_name: String,
     #[arg(long, default_value_t = 3650)]
     validity_days: u64,
+}
+
+#[derive(Debug, Args)]
+struct AgentArgs {
+    #[arg(long, env = "SIGNET_SIGNER_NAME", default_value = DEFAULT_SIGNER_NAME)]
+    signer_name: String,
+    #[arg(long, env = "SIGNET_TRUST_DOMAIN")]
+    trust_domain: String,
+    #[arg(long, env = "SIGNET_AGENT_NAMESPACE")]
+    namespace: String,
+    #[arg(long, env = "SIGNET_AGENT_SERVICE_ACCOUNT")]
+    service_account: String,
+    #[arg(long, env = "SIGNET_AGENT_CA_BUNDLE", default_value = DEFAULT_AGENT_CA_BUNDLE)]
+    ca_bundle: PathBuf,
+    #[arg(long, env = "SIGNET_AGENT_OUTPUT_DIR", default_value = DEFAULT_AGENT_OUTPUT_DIR)]
+    output_dir: PathBuf,
+    #[arg(
+        long,
+        env = "SIGNET_AGENT_EXPIRATION_SECONDS",
+        default_value_t = 86_400
+    )]
+    expiration_seconds: u32,
+    #[arg(
+        long,
+        env = "SIGNET_AGENT_RENEW_BEFORE_SECONDS",
+        default_value_t = 43_200
+    )]
+    renew_before_seconds: u64,
+    #[arg(
+        long,
+        env = "SIGNET_AGENT_REQUEST_TIMEOUT_SECONDS",
+        default_value_t = 30
+    )]
+    request_timeout_seconds: u64,
+    #[arg(long, env = "SIGNET_AGENT_POLL_INTERVAL_MILLIS", default_value_t = 250)]
+    poll_interval_millis: u64,
+    #[arg(
+        long,
+        env = "SIGNET_AGENT_RELOAD_ADDRESS",
+        default_value = "127.0.0.1:4192"
+    )]
+    reload_address: SocketAddr,
+    #[arg(long)]
+    once: bool,
 }
 
 #[derive(Debug, Args)]
@@ -83,6 +132,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Bootstrap(args) => bootstrap_command(&args),
+        Command::Agent(args) => agent_command(args).await,
         Command::Run(args) => run_command(args).await,
     }
 }
@@ -107,7 +157,39 @@ fn bootstrap_command(args: &BootstrapArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_command(args: RunArgs) -> Result<()> {
+async fn agent_command(args: AgentArgs) -> Result<()> {
+    init_tracing();
+    let mode = if args.once {
+        AgentMode::Once
+    } else {
+        AgentMode::Continuous
+    };
+    let config = AgentConfig::new(AgentSettings {
+        signer_name: args.signer_name,
+        trust_domain: args.trust_domain,
+        namespace: args.namespace,
+        service_account: args.service_account,
+        expiration_seconds: args.expiration_seconds,
+        renew_before: Duration::from_secs(args.renew_before_seconds),
+        output_dir: args.output_dir,
+        ca_bundle: args.ca_bundle,
+        request_timeout: Duration::from_secs(args.request_timeout_seconds),
+        poll_interval: Duration::from_millis(args.poll_interval_millis),
+        reload_address: args.reload_address,
+    })?;
+    let identity = config.identity().to_owned();
+    let client = kube::Client::try_default()
+        .await
+        .context("load Kubernetes client configuration")?;
+    tracing::info!(%identity, ?mode, "starting Signet workload credential agent");
+    run_agent(client, config, mode, tokio::signal::ctrl_c()).await?;
+    if mode == AgentMode::Once {
+        println!("Interlink credential is ready for {identity}");
+    }
+    Ok(())
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -115,6 +197,10 @@ async fn run_command(args: RunArgs) -> Result<()> {
         )
         .try_init()
         .ok();
+}
+
+async fn run_command(args: RunArgs) -> Result<()> {
+    init_tracing();
 
     let allowed = args
         .allowed_service_accounts
@@ -307,6 +393,27 @@ mod tests {
         ] {
             assert!(bootstrap_command(&args).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn agent_rejects_invalid_configuration_before_contacting_kubernetes() {
+        let error = agent_command(AgentArgs {
+            signer_name: DEFAULT_SIGNER_NAME.into(),
+            trust_domain: "example.com".into(),
+            namespace: "workloads".into(),
+            service_account: "example-app".into(),
+            ca_bundle: PathBuf::from("missing"),
+            output_dir: PathBuf::from("unused"),
+            expiration_seconds: 599,
+            renew_before_seconds: 1,
+            request_timeout_seconds: 30,
+            poll_interval_millis: 250,
+            reload_address: "127.0.0.1:4192".parse().unwrap(),
+            once: true,
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("maximum certificate lifetime"));
     }
 
     #[tokio::test]

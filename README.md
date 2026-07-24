@@ -63,14 +63,21 @@ Interlink currently transports one certificate, so Signet emits a directly signe
 
 ## Minimal deployment
 
-Prerequisites: Kubernetes v1.22 or later, `kubectl` with Kustomize support, and an image built from this repository.
+Prerequisites: Kubernetes v1.22 or later and `kubectl` with Kustomize support.
 
-1. Build and publish the container, or replace the image in `deploy/signet.yaml` with an immutable image digest:
+1. Choose an immutable container image. CI publishes one OCI manifest for both
+   `linux/amd64` and `linux/arm64` to
+   `ghcr.io/alexandernicholson/signet` only after every check passes. A push to
+   `main` publishes `latest` and `sha-<full-commit>`; a `v*` tag also publishes
+   the tag and semantic-version aliases. Pull by digest in production:
 
    ```sh
-   docker build -t ghcr.io/alexandernicholson/signet:0.1.0 .
-   docker push ghcr.io/alexandernicholson/signet:0.1.0
+   docker pull ghcr.io/alexandernicholson/signet:latest
+   docker buildx imagetools inspect ghcr.io/alexandernicholson/signet:latest
    ```
+
+   Pull requests still build and smoke-test the Dockerfile but cannot publish.
+   A local single-platform image can be built with `docker build -t signet .`.
 
 2. Generate the persistent CA locally. The command refuses to overwrite any existing output:
 
@@ -135,6 +142,53 @@ The manifest grants only cluster-wide CSR read access, approval/status mutation,
 | `SIGNET_HEALTH_ADDRESS` | `0.0.0.0:8080` | Probe listener |
 
 Readiness remains false until the initial Kubernetes CSR watch has completed. Liveness reports immediately after the probe listener starts.
+
+## Workload credential agent
+
+Run `signet agent` in the Interlink pod to generate its Ed25519 private key,
+submit the exact Signet CSR profile, poll the named CSR, validate the returned
+certificate and trust chain, and write `tls.key` and `tls.crt` to a shared
+volume. The namespace and service-account arguments are mandatory, local
+configuration; the API server independently records the authenticated
+service-account username on the CSR, and Signet requires both identities to
+match.
+
+```sh
+/signet agent \
+  --trust-domain example.com \
+  --namespace workloads \
+  --service-account example-app \
+  --ca-bundle /var/run/interlink/ca-bundle.pem \
+  --output-dir /var/run/interlink/identity \
+  --reload-address 127.0.0.1:4192
+```
+
+Continuous mode renews before expiry. After each newly issued credential is
+durably installed, it sends a bounded HTTP/1.1 `POST /reload` request to the
+configured loopback address and retries failures. Use `--once` in an init
+container to acquire one credential and exit without sending a reload request.
+The private key never enters Kubernetes; only the CSR and issued certificate
+do.
+
+The workload service account needs only `create` and `get` on the cluster-scoped
+`certificatesigningrequests.certificates.k8s.io` resource. It does not need
+approval, status-update, list, watch, or Secret permissions. Mount the public CA
+bundle read-only and place the output directory on a volume shared with
+Interlink.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `SIGNET_SIGNER_NAME` | `example.com/signet` | Must equal the issuer's signer name |
+| `SIGNET_TRUST_DOMAIN` | Required | SPIFFE trust domain |
+| `SIGNET_AGENT_NAMESPACE` | Required | Workload namespace |
+| `SIGNET_AGENT_SERVICE_ACCOUNT` | Required | Workload service-account name |
+| `SIGNET_AGENT_CA_BUNDLE` | `/var/run/interlink/ca-bundle.pem` | One or more trusted Signet CA PEM blocks |
+| `SIGNET_AGENT_OUTPUT_DIR` | `/var/run/interlink/identity` | Directory receiving `tls.key` and `tls.crt` |
+| `SIGNET_AGENT_EXPIRATION_SECONDS` | `86400` | Exact requested certificate interval |
+| `SIGNET_AGENT_RENEW_BEFORE_SECONDS` | `43200` | Renewal lead time |
+| `SIGNET_AGENT_REQUEST_TIMEOUT_SECONDS` | `30` | CSR and reload timeout |
+| `SIGNET_AGENT_POLL_INTERVAL_MILLIS` | `250` | CSR and reload-retry interval |
+| `SIGNET_AGENT_RELOAD_ADDRESS` | `127.0.0.1:4192` | Interlink reload listener |
 
 ## Development
 

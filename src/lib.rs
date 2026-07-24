@@ -1,5 +1,6 @@
 //! Signet is a narrow, RFC-constrained Kubernetes CSR signer for Interlink.
 
+pub mod agent;
 pub mod authority;
 pub mod bootstrap;
 pub mod controller;

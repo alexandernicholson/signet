@@ -1,10 +1,23 @@
 #![allow(clippy::expect_used)]
 
-use std::fs;
+use std::{
+    fs,
+    io::{BufRead, BufReader, Read, Write},
+    net::{TcpListener, TcpStream},
+    path::Path,
+};
 
 use assert_cmd::Command;
+use k8s_openapi::{
+    ByteString,
+    api::certificates::v1::{CertificateSigningRequest, CertificateSigningRequestStatus},
+};
 use predicates::prelude::*;
-use signet::authority::{BootstrapConfig, bootstrap};
+use signet::{
+    authority::{BootstrapConfig, SigningAuthority, bootstrap},
+    controller::{Decision, Processor},
+    policy::{Policy, ServiceAccount},
+};
 use tempfile::tempdir;
 use time::OffsetDateTime;
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
@@ -26,6 +39,99 @@ users:
     user: {}
 ";
 
+fn read_http_request(stream: &TcpStream) -> (String, Vec<u8>) {
+    let mut reader = BufReader::new(stream.try_clone().expect("clone API connection"));
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .expect("read API request line");
+    let method = request_line
+        .split_whitespace()
+        .next()
+        .expect("API request method")
+        .to_owned();
+    let mut content_length = 0;
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header).expect("read API header");
+        if header == "\r\n" {
+            break;
+        }
+        let Some((name, value)) = header.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse().expect("content length");
+        }
+    }
+    let mut body = vec![0_u8; content_length];
+    reader.read_exact(&mut body).expect("read API body");
+    (method, body)
+}
+
+fn serve_agent_api(listener: &TcpListener, processor: &Processor) {
+    let mut issued: Option<(CertificateSigningRequest, String)> = None;
+    for _ in 0..2 {
+        let (mut stream, _) = listener.accept().expect("agent API connection");
+        let (method, body) = read_http_request(&stream);
+        let (status, response) = if method == "POST" {
+            let submitted: CertificateSigningRequest =
+                serde_json::from_slice(&body).expect("submitted CSR");
+            let mut created = submitted;
+            created.metadata.name = Some("signet-cli-1".into());
+            created.spec.username = Some("system:serviceaccount:workloads:example-app".into());
+            let decision = processor
+                .evaluate(&created, OffsetDateTime::now_utc(), [11; 20])
+                .expect("evaluate agent CSR");
+            let Decision::Issue {
+                certificate_pem, ..
+            } = decision
+            else {
+                panic!("agent CSR was not issued");
+            };
+            issued = Some((created.clone(), certificate_pem));
+            ("201 Created", created)
+        } else {
+            let (mut current, certificate) = issued.clone().expect("created CSR");
+            current.status = Some(CertificateSigningRequestStatus {
+                certificate: Some(ByteString(certificate.into_bytes())),
+                conditions: None,
+            });
+            ("200 OK", current)
+        };
+        let body = serde_json::to_vec(&response).expect("serialize API response");
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .expect("write API response headers");
+        stream.write_all(&body).expect("write API response body");
+    }
+}
+
+fn credential_agent(ca_bundle: &Path, output_directory: &Path) -> Command {
+    let mut command = Command::cargo_bin("signet").expect("binary");
+    command.args([
+        "agent",
+        "--trust-domain",
+        "example.com",
+        "--namespace",
+        "workloads",
+        "--service-account",
+        "example-app",
+        "--ca-bundle",
+        ca_bundle.to_str().expect("CA bundle path"),
+        "--output-dir",
+        output_directory.to_str().expect("output path"),
+        "--request-timeout-seconds",
+        "2",
+        "--poll-interval-millis",
+        "1",
+    ]);
+    command
+}
+
 #[test]
 fn help_names_signet_and_its_crd_free_commands() {
     Command::cargo_bin("signet")
@@ -35,7 +141,64 @@ fn help_names_signet_and_its_crd_free_commands() {
         .success()
         .stdout(predicate::str::contains("Signet"))
         .stdout(predicate::str::contains("bootstrap"))
+        .stdout(predicate::str::contains("agent"))
         .stdout(predicate::str::contains("run"));
+}
+
+#[test]
+fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors() {
+    let directory = tempdir().expect("temporary directory");
+    let artifacts = bootstrap(
+        BootstrapConfig {
+            common_name: "Agent CLI CA".into(),
+            validity: std::time::Duration::from_secs(365 * 24 * 60 * 60),
+        },
+        OffsetDateTime::now_utc(),
+    )
+    .expect("bootstrap");
+    let bundle = directory.path().join("bundle.pem");
+    fs::write(&bundle, &artifacts.trust_bundle_pem).expect("write trust bundle");
+    let authority =
+        SigningAuthority::from_pem(&artifacts.ca_certificate_pem, &artifacts.ca_private_key_pem)
+            .expect("signing authority");
+    let policy = Policy::new(
+        "example.com/signet",
+        "example.com",
+        &[ServiceAccount::new("workloads", "example-app")],
+        std::time::Duration::from_secs(86_400),
+    )
+    .expect("agent policy");
+    let processor = Processor::new(policy, authority);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("agent API listener");
+    let api_address = listener.local_addr().expect("agent API address");
+    let server = std::thread::spawn(move || serve_agent_api(&listener, &processor));
+    let kubeconfig = directory.path().join("agent-kubeconfig");
+    fs::write(
+        &kubeconfig,
+        TEST_KUBECONFIG.replace("127.0.0.1:9", &api_address.to_string()),
+    )
+    .expect("write agent kubeconfig");
+    let output = directory.path().join("identity");
+    credential_agent(&bundle, &output)
+        .arg("--once")
+        .env("KUBECONFIG", &kubeconfig)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Interlink credential is ready for spiffe://example.com/ns/workloads/sa/example-app",
+        ));
+    server.join().expect("agent API server");
+    assert!(output.join("tls.key").is_file());
+    assert!(output.join("tls.crt").is_file());
+
+    let unavailable_kubeconfig = directory.path().join("unavailable-kubeconfig");
+    fs::write(&unavailable_kubeconfig, TEST_KUBECONFIG).expect("write unavailable kubeconfig");
+    credential_agent(&bundle, &directory.path().join("continuous-identity"))
+        .env("KUBECONFIG", unavailable_kubeconfig)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Kubernetes API request failed"));
 }
 
 #[test]

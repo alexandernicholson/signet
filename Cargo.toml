@@ -11,6 +11,7 @@ repository = "https://github.com/alexandernicholson/signet"
 anyhow = "1.0.100"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 futures = "0.3.31"
+httparse = "1.10.1"
 getrandom = "0.3.4"
 k8s-openapi = { version = "0.28.0", features = ["v1_32"] }
 kube = { version = "4.2.0", features = ["runtime"] }
@@ -24,6 +25,7 @@ tokio = { version = "1.49.0", features = ["io-util", "macros", "net", "rt-multi-
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 x509-parser = { version = "0.18.1", features = ["verify"] }
+zeroize = "1.9.0"
 
 [dev-dependencies]
 assert_cmd = "2.1.1"

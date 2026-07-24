@@ -1949,6 +1949,7 @@ dependencies = [
  "getrandom 0.3.4",
  "http",
  "http-body-util",
+ "httparse",
  "k8s-openapi",
  "kube",
  "predicates",
@@ -1965,6 +1966,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
