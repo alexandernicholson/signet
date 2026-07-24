@@ -176,6 +176,15 @@ approval, status-update, list, watch, or Secret permissions. Mount the public CA
 bundle read-only and place the output directory on a volume shared with
 Interlink.
 
+Configure the Interlink container to read the same files with
+`INTERLINK_CA_BUNDLE_PATH=/var/run/interlink/ca-bundle.pem`,
+`INTERLINK_CERT_PATH=/var/run/interlink/identity/tls.crt`, and
+`INTERLINK_KEY_PATH=/var/run/interlink/identity/tls.key`. Set
+`INTERLINK_IDENTITY` to the SPIFFE ID formed from the agent's trust-domain,
+namespace, and service-account arguments. The pod must give both containers a
+shared supplementary group (for example with `fsGroup`) because the agent
+writes the private key with mode `0640`.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `SIGNET_SIGNER_NAME` | `example.com/signet` | Must equal the issuer's signer name |
