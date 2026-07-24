@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Format and Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint every target
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Run all targets
+        run: cargo test --locked --all-targets
+      - name: Build release binary
+        run: cargo build --locked --release
+
+  msrv:
+    name: Minimum supported Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust 1.89
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal
+          rustup default 1.89.0
+      - name: Check every target
+        run: cargo check --locked --all-targets
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust and LLVM tools
+        run: |
+          rustup toolchain install stable --profile minimal --component llvm-tools-preview
+          rustup default stable
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Enforce complete line coverage
+        run: cargo llvm-cov --locked --all-targets --summary-only --fail-under-lines 100
+
+  supply-chain:
+    name: Supply-chain audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit locked dependencies
+        run: cargo audit
+      - name: Verify archived RFC sources
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import pathlib
+          import tomllib
+
+          root = pathlib.Path("rfcs")
+          manifest = tomllib.loads((root / "SOURCES.toml").read_text())
+          for source in manifest["rfc"]:
+              path = root / f"rfc{source['number']}.txt"
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual != source["sha256"]:
+                  raise SystemExit(f"checksum mismatch: {path}")
+          print(f"verified {len(manifest['rfc'])} RFC source files")
+          PY
+
+  packaging:
+    name: Container and Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build production container
+        run: docker build --tag signet:ci .
+      - name: Smoke-test production container
+        run: docker run --rm signet:ci --help
+      - name: Generate disposable deployment CA
+        run: cargo run --locked --release -- bootstrap --output-dir deploy/ca --validity-days 1
+      - name: Render Kubernetes deployment
+        run: go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.1 build deploy > /tmp/signet-rendered.yaml

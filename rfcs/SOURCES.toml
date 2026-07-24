@@ -1,0 +1,63 @@
+# Verbatim text downloaded from the RFC Editor, the canonical RFC source.
+# Refresh only after reviewing updates and errata against RFC_PROFILE.md.
+
+[[rfc]]
+number = 2119
+title = "Key words for use in RFCs to Indicate Requirement Levels"
+url = "https://www.rfc-editor.org/rfc/rfc2119.txt"
+sha256 = "3c2ceb7bfc84cd34720f4a5271338ab9d8280d34bdd1eb250c64306202f2ed8b"
+
+[[rfc]]
+number = 2986
+title = "PKCS #10: Certification Request Syntax Specification Version 1.7"
+url = "https://www.rfc-editor.org/rfc/rfc2986.txt"
+sha256 = "9f93627442b9fa03b24336646ffdfb3f33ed8cfd575e6b984fddab5fe88d03c0"
+
+[[rfc]]
+number = 3986
+title = "Uniform Resource Identifier (URI): Generic Syntax"
+url = "https://www.rfc-editor.org/rfc/rfc3986.txt"
+sha256 = "3102dae4b68cebe40337730312fcb612297b8928547267e8b3d1ee6002b2d683"
+
+[[rfc]]
+number = 5280
+title = "Internet X.509 Public Key Infrastructure Certificate and CRL Profile"
+url = "https://www.rfc-editor.org/rfc/rfc5280.txt"
+sha256 = "a2f2628c0a83b873fc4786abd921f9b2c02395954b655d190bf16b831633345d"
+errata = "https://www.rfc-editor.org/errata/rfc5280"
+
+[[rfc]]
+number = 5958
+title = "Asymmetric Key Packages"
+url = "https://www.rfc-editor.org/rfc/rfc5958.txt"
+sha256 = "82778b9ce7b34f02b5ae9777bfb9e42579744aebd2e1479f476513864525af67"
+
+[[rfc]]
+number = 6818
+title = "Updates to the Internet X.509 PKI Certificate and CRL Profile"
+url = "https://www.rfc-editor.org/rfc/rfc6818.txt"
+sha256 = "e6bb52bd92138bb36cfd01202f22153d98318c6f7e3e5b15171374aec67a829f"
+
+[[rfc]]
+number = 7468
+title = "Textual Encodings of PKIX, PKCS, and CMS Structures"
+url = "https://www.rfc-editor.org/rfc/rfc7468.txt"
+sha256 = "0b2c3c2087cc0b099789c90e61c0208e87b25793f0ce40090979e8c734b3d989"
+
+[[rfc]]
+number = 8032
+title = "Edwards-Curve Digital Signature Algorithm (EdDSA)"
+url = "https://www.rfc-editor.org/rfc/rfc8032.txt"
+sha256 = "ed63657ff389301282b169b0abde9b5dd2c7e4d524fdfa5da6ff3094fc93c4c3"
+
+[[rfc]]
+number = 8174
+title = "Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words"
+url = "https://www.rfc-editor.org/rfc/rfc8174.txt"
+sha256 = "5ca0e2f90be0bc5928ee465f76518fee316dfa775aed885658a29a419cc293b7"
+
+[[rfc]]
+number = 8410
+title = "Algorithm Identifiers for Ed25519, Ed448, X25519, and X448"
+url = "https://www.rfc-editor.org/rfc/rfc8410.txt"
+sha256 = "90a0ff0b3dd661d3e26e1873f40f2ca8b41709a7bbd755a1ed3599c4746313d2"

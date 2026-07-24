@@ -1,0 +1,8 @@
+target
+.git
+.github
+rfcs
+tests
+/deploy/ca/
+coverage
+*.profraw
