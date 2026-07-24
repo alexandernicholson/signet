@@ -2082,7 +2082,7 @@ mod tests {
         let material = artifacts();
         let mut renew_settings = settings(&directory, &material);
         renew_settings.expiration_seconds = 600;
-        renew_settings.renew_before = Duration::from_secs(299);
+        renew_settings.renew_before = Duration::from_millis(299_900);
         let mut config = AgentConfig::new(renew_settings).expect("config");
         let (address, completed, task) =
             reload_sequence_server(vec![reload_ok(), reload_ok()]).await;

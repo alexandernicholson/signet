@@ -201,6 +201,14 @@ fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors(
         .assert()
         .failure()
         .stderr(predicate::str::contains("Kubernetes API request failed"));
+
+    credential_agent(&bundle, &directory.path().join("missing-config-identity"))
+        .env("KUBECONFIG", directory.path().join("missing-kubeconfig"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "load Kubernetes client configuration",
+        ));
 }
 
 #[test]
