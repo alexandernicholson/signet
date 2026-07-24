@@ -9,6 +9,7 @@ use signet::{
 use time::OffsetDateTime;
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn bootstrap_resources_keep_the_private_key_in_the_secret_only() {
     let artifacts = bootstrap(
         BootstrapConfig {

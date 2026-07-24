@@ -199,7 +199,7 @@ cargo test --all-targets
 cargo llvm-cov --all-targets --fail-under-lines 100
 ```
 
-The coverage gate enforces 100% source-line coverage. Tests exercise the RFC profile, malformed and adversarial CSRs, CA persistence and validation, Kubernetes subresource patches, watch lifecycle, graceful shutdown, health behavior, CLI failures, deployment resource generation, and rollback after partial writes.
+The coverage gate enforces 100% source-line coverage. Every unit and integration test has a two-second deadline. Tests exercise the RFC profile, malformed and adversarial CSRs, CA persistence and validation, Kubernetes subresource patches, watch lifecycle, graceful shutdown, health behavior, CLI failures, deployment resource generation, and rollback after partial writes.
 
 For reproducible hot-path commands and measured optimization rounds, see [BENCHMARKS.md](BENCHMARKS.md).
 

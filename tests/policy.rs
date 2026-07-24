@@ -81,6 +81,7 @@ fn csr_pem(der: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn accepts_the_exact_service_account_derived_identity() {
     let csr = valid_csr();
     let approved = policy().review(request(&csr)).expect("valid CSR");
@@ -90,6 +91,7 @@ fn accepts_the_exact_service_account_derived_identity() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn derives_identity_only_from_a_strict_service_account_username() {
     let account = ServiceAccount::from_username(USERNAME).expect("valid username");
     assert_eq!(account.namespace(), "workloads");
@@ -109,6 +111,7 @@ fn derives_identity_only_from_a_strict_service_account_username() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_wrong_signer_requester_and_lifetime() {
     let csr = valid_csr();
     let mut wrong_signer = request(&csr);
@@ -168,6 +171,7 @@ fn rejects_wrong_signer_requester_and_lifetime() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn requires_the_exact_kubernetes_usage_set() {
     let csr = valid_csr();
     for usages in [
@@ -220,6 +224,7 @@ fn csr_with_tampered_signature() -> Vec<u8> {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_malformed_or_tampered_pkcs10_requests() {
     let malformed = [1_u8, 2, 3];
     assert_eq!(
@@ -241,6 +246,7 @@ fn rejects_malformed_or_tampered_pkcs10_requests() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_noncanonical_pkcs10_structures_and_algorithms() {
     let valid = valid_csr();
     let wrong_label = String::from_utf8(valid.clone())
@@ -331,6 +337,7 @@ fn rejects_noncanonical_pkcs10_structures_and_algorithms() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_every_identity_shape_except_one_exact_uri_san() {
     let wrong_uri = csr_with_sans(vec![SanType::URI(
         "spiffe://other.example.com/ns/workloads/sa/other"
@@ -381,6 +388,7 @@ fn rejects_every_identity_shape_except_one_exact_uri_san() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn validates_policy_configuration_before_serving() {
     assert!(Policy::new("bad", TRUST_DOMAIN, &[], Duration::from_secs(600)).is_err());
     assert!(Policy::new(SIGNER_NAME, "not a domain", &[], Duration::from_secs(600)).is_err());

@@ -87,6 +87,7 @@ fn certificate_pem(der: &[u8]) -> String {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn bootstrap_creates_a_persistent_rfc_profile_ca() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let artifacts = artifacts(now);
@@ -142,6 +143,7 @@ fn bootstrap_creates_a_persistent_rfc_profile_ca() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn issues_the_exact_interlink_leaf_profile() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let artifacts = artifacts(now);
@@ -229,6 +231,7 @@ fn issues_the_exact_interlink_leaf_profile() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn serials_are_positive_nonzero_and_distinct() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let artifacts = artifacts(now);
@@ -252,6 +255,7 @@ fn serials_are_positive_nonzero_and_distinct() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn refuses_invalid_or_mismatched_ca_material() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let first = artifacts(now);
@@ -265,6 +269,7 @@ fn refuses_invalid_or_mismatched_ca_material() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_invalid_ca_bootstrap_configuration() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     assert!(matches!(
@@ -300,6 +305,7 @@ fn rejects_invalid_ca_bootstrap_configuration() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_invalid_loaded_ca_profiles() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let valid = artifacts(now);
@@ -392,6 +398,7 @@ fn rejects_invalid_loaded_ca_profiles() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn rejects_issuance_outside_ca_validity() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let valid = artifacts(now);
@@ -405,6 +412,7 @@ fn rejects_issuance_outside_ca_validity() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn pem_output_obeys_rfc7468_line_width() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let artifacts = artifacts(now);

@@ -13,6 +13,7 @@ All notable changes to Signet are documented here.
 - Stable denial reason codes for signer, requester, usage, lifetime, PKCS #10, key, subject, extension, and identity failures.
 - Liveness, watch-initialization readiness, graceful shutdown, least-privilege signer-scoped RBAC, restricted pod security, and Kustomize deployment assets.
 - Adversarial request, CA profile, Kubernetes patch, runtime lifecycle, CLI, rollback, and health test suites.
+- A two-second deadline on every unit and integration test, with event-driven synchronization for credential-agent reload and retry behavior.
 - A workload credential agent that generates keys locally, submits and validates the exact Signet CSR profile, renews credentials, atomically stages file updates, and reloads Interlink over bounded loopback HTTP.
 - Gated `linux/amd64` and `linux/arm64` OCI image publication to GitHub Container Registry with immutable commit and release tags, provenance, and SBOM attestations.
 - A CI line-coverage gate at 100%, cross-platform tests, MSRV check, Clippy, formatting, dependency audit, RFC checksum verification, container smoke test, and manifest rendering.

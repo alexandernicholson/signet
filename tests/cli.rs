@@ -133,6 +133,7 @@ fn credential_agent(ca_bundle: &Path, output_directory: &Path) -> Command {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn help_names_signet_and_its_crd_free_commands() {
     Command::cargo_bin("signet")
         .expect("binary")
@@ -146,6 +147,7 @@ fn help_names_signet_and_its_crd_free_commands() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors() {
     let directory = tempdir().expect("temporary directory");
     let artifacts = bootstrap(
@@ -202,6 +204,7 @@ fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors(
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn bootstrap_writes_interlink_compatible_material_without_overwrite() {
     let directory = tempdir().expect("temporary directory");
     Command::cargo_bin("signet")
@@ -244,6 +247,7 @@ fn bootstrap_writes_interlink_compatible_material_without_overwrite() {
 
 #[cfg(unix)]
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn bootstrap_keeps_the_signing_key_private() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -273,6 +277,7 @@ fn bootstrap_keeps_the_signing_key_private() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn bootstrap_reports_invalid_configuration_and_output_paths() {
     let too_large = u64::MAX.to_string();
     for (argument, expected) in [
@@ -311,6 +316,7 @@ fn bootstrap_reports_invalid_configuration_and_output_paths() {
 
 #[cfg(unix)]
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn bootstrap_rolls_back_partial_output() {
     use std::os::unix::fs::symlink;
 
@@ -331,6 +337,7 @@ fn bootstrap_rolls_back_partial_output() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn run_rejects_invalid_policy_before_contacting_kubernetes() {
     let directory = tempdir().expect("temporary directory");
     fs::write(directory.path().join("ca.crt"), "bad certificate").expect("write cert");
@@ -355,6 +362,7 @@ fn run_rejects_invalid_policy_before_contacting_kubernetes() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn run_reports_local_startup_failures() {
     let directory = tempdir().expect("temporary directory");
     let certificate = directory.path().join("ca.crt");
@@ -445,6 +453,7 @@ fn run_reports_local_startup_failures() {
 
 #[cfg(unix)]
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn run_loads_the_ca_kubernetes_client_and_health_server() {
     use std::{
         io::{Read, Write},
@@ -498,7 +507,7 @@ fn run_loads_the_ca_kubernetes_client_and_health_server() {
         .spawn()
         .expect("start issuer");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_millis(1_500);
     let mut started = false;
     while Instant::now() < deadline {
         if let Ok(mut stream) =
@@ -527,7 +536,7 @@ fn run_loads_the_ca_kubernetes_client_and_health_server() {
         .status()
         .expect("send SIGINT");
     assert!(signal.success());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_millis(1_500);
     loop {
         if let Some(status) = child.try_wait().expect("issuer status") {
             assert!(status.success(), "issuer did not stop cleanly");

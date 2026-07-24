@@ -28,6 +28,7 @@ async fn request(address: std::net::SocketAddr, path: &str) -> String {
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn liveness_is_immediate_and_readiness_tracks_watch_initialization() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

@@ -1057,6 +1057,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn configuration_enforces_identity_lifetime_and_polling_boundaries() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
@@ -1118,6 +1119,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn once_acquires_validates_and_reuses_an_exact_signet_credential() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
@@ -1207,6 +1209,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn reload_response_parser_is_strict_and_bounded() {
         assert!(
             parse_reload_response(
@@ -1231,6 +1234,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn renewal_delay_never_underflows() {
         let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
         assert_eq!(
@@ -1328,6 +1332,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn trust_bundle_accepts_rotation_and_rejects_invalid_roots() {
         let now = OffsetDateTime::now_utc();
         let first = artifacts();
@@ -1403,6 +1408,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn leaf_validation_rejects_format_key_time_and_trust_mismatches() {
         let now = OffsetDateTime::now_utc();
         let material = artifacts();
@@ -1487,6 +1493,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn leaf_validation_rejects_every_extension_profile_deviation() {
         let material = artifacts();
         let key = KeyPair::generate_for(&rcgen::PKCS_ED25519).expect("leaf key");
@@ -1532,6 +1539,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn existing_credential_loader_handles_partial_corrupt_and_unreadable_files() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
@@ -1579,6 +1587,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn condition_messages_preserve_available_diagnostics() {
         assert_eq!(
             condition_message(Some("Reason"), Some("details")),
@@ -1639,6 +1648,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn certificate_wait_reports_denial_failure_issuance_and_api_errors() {
         use k8s_openapi::api::certificates::v1::{
             CertificateSigningRequestCondition, CertificateSigningRequestStatus,
@@ -1723,6 +1733,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn acquisition_reports_api_missing_name_timeout_and_invalid_certificate_errors() {
         let material = artifacts();
 
@@ -1795,52 +1806,68 @@ mod tests {
         );
     }
 
-    async fn reload_server(response: Vec<u8>) -> (SocketAddr, tokio::task::JoinHandle<Vec<u8>>) {
+    async fn reload_server(
+        response: Vec<u8>,
+    ) -> (
+        SocketAddr,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<Vec<u8>>,
+    ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("reload listener");
         let address = listener.local_addr().expect("reload address");
+        let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("reload request");
-            let mut request = [0_u8; 512];
-            let count = stream
-                .read(&mut request)
+            let mut request = [0_u8; 80];
+            stream
+                .read_exact(&mut request)
                 .await
                 .expect("read reload request");
             stream
                 .write_all(&response)
                 .await
                 .expect("write reload response");
-            request[..count].to_vec()
+            stream.shutdown().await.expect("finish reload response");
+            let _ = completed_tx.send(());
+            request.to_vec()
         });
-        (address, task)
+        (address, completed_rx, task)
     }
 
     async fn reload_sequence_server(
         responses: Vec<Vec<u8>>,
-    ) -> (SocketAddr, tokio::task::JoinHandle<Vec<Vec<u8>>>) {
+    ) -> (
+        SocketAddr,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<Vec<Vec<u8>>>,
+    ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("reload listener");
         let address = listener.local_addr().expect("reload address");
+        let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let mut requests = Vec::new();
             for response in responses {
                 let (mut stream, _) = listener.accept().await.expect("reload request");
-                let mut request = [0_u8; 512];
-                let count = stream
-                    .read(&mut request)
+                let mut request = [0_u8; 80];
+                stream
+                    .read_exact(&mut request)
                     .await
                     .expect("read reload request");
                 stream
                     .write_all(&response)
                     .await
                     .expect("write reload response");
-                requests.push(request[..count].to_vec());
+                stream.shutdown().await.expect("finish reload response");
+                requests.push(request.to_vec());
             }
+            let _ = completed_tx.send(());
             requests
         });
-        (address, task)
+        (address, completed_rx, task)
     }
 
     fn reload_ok() -> Vec<u8> {
@@ -1848,8 +1875,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn reload_notification_is_exact_bounded_and_connection_safe() {
-        let (address, task) = reload_server(reload_ok()).await;
+        let (address, _completed, task) = reload_server(reload_ok()).await;
         notify_reload(address).await.expect("reload notification");
         assert_eq!(
             task.await.expect("reload server"),
@@ -1857,7 +1885,7 @@ mod tests {
         );
 
         let oversized = vec![b'x'; MAX_RELOAD_RESPONSE_BYTES + 1];
-        let (address, task) = reload_server(oversized).await;
+        let (address, _completed, task) = reload_server(oversized).await;
         assert!(matches!(
             notify_reload(address).await,
             Err(AgentError::ReloadResponse("response exceeds 4096 bytes"))
@@ -1881,33 +1909,44 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn continuous_mode_reloads_and_stops_during_renewal_wait() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
         let mut config = AgentConfig::new(settings(&directory, &material)).expect("config");
-        let (address, task) = reload_server(reload_ok()).await;
+        let (address, completed, task) = reload_server(reload_ok()).await;
         config.reload_address = address;
-        let reused_config = config.clone();
         let (client, _) = issuing_client(processor(&material));
-        run_agent(client, config, AgentMode::Continuous, async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            Ok(())
-        })
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_agent(client, config.clone(), AgentMode::Continuous, async {
+                completed.await.expect("reload completion");
+                tokio::task::yield_now().await;
+                Ok(())
+            }),
+        )
         .await
+        .expect("continuous agent deadline")
         .expect("continuous agent");
         assert_eq!(
             task.await.expect("reload server"),
             b"POST /reload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let requests = Arc::new(Mutex::new(0));
+        let mut shutdown_polls = 0;
         run_agent(
             inert_client(Arc::clone(&requests)),
-            reused_config,
+            config,
             AgentMode::Continuous,
-            async {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                Ok(())
-            },
+            std::future::poll_fn(move |context| {
+                shutdown_polls += 1;
+                if shutdown_polls == 1 {
+                    context.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                } else {
+                    std::task::Poll::Ready(Ok(()))
+                }
+            }),
         )
         .await
         .expect("reused credential");
@@ -1915,26 +1954,34 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn continuous_mode_retries_reload_status_errors() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
         let mut config = AgentConfig::new(settings(&directory, &material)).expect("config");
         let unavailable =
             b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
-        let (address, task) = reload_sequence_server(vec![unavailable, reload_ok()]).await;
+        let (address, completed, task) =
+            reload_sequence_server(vec![unavailable, reload_ok()]).await;
         config.reload_address = address;
         let (client, _) = issuing_client(processor(&material));
-        run_agent(client, config, AgentMode::Continuous, async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            Ok(())
-        })
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_agent(client, config, AgentMode::Continuous, async {
+                completed.await.expect("reload completion");
+                tokio::task::yield_now().await;
+                Ok(())
+            }),
+        )
         .await
+        .expect("retrying agent deadline")
         .expect("retrying agent");
         assert_eq!(task.await.expect("reload server").len(), 2);
     }
 
     #[tokio::test]
-    async fn continuous_mode_stops_during_reload_and_retry_sleep() {
+    #[ntest_timeout::timeout(2_000)]
+    async fn continuous_mode_stops_during_reload() {
         let directory = tempfile::tempdir().expect("reload-shutdown directory");
         let material = artifacts();
         let mut config = AgentConfig::new(settings(&directory, &material)).expect("config");
@@ -1963,24 +2010,38 @@ mod tests {
         .expect_err("shutdown failure during reload");
         assert!(matches!(error, AgentError::Shutdown(_)));
         server.await.expect("reload server");
-
-        let directory = tempfile::tempdir().expect("retry-shutdown directory");
-        let mut retry_settings = settings(&directory, &material);
-        retry_settings.poll_interval = Duration::from_secs(1);
-        let mut config = AgentConfig::new(retry_settings).expect("config");
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("unused listener");
-        config.reload_address = listener.local_addr().expect("unused address");
-        drop(listener);
-        let (client, _) = issuing_client(processor(&material));
-        run_agent(client, config, AgentMode::Continuous, async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(())
-        })
-        .await
-        .expect("shutdown during retry delay");
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
+    async fn continuous_mode_stops_during_retry_sleep() {
+        let material = artifacts();
+
+        let directory = tempfile::tempdir().expect("retry-shutdown directory");
+        let mut retry_settings = settings(&directory, &material);
+        retry_settings.poll_interval = Duration::from_millis(100);
+        let mut config = AgentConfig::new(retry_settings).expect("config");
+        let unavailable =
+            b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let (address, completed, task) = reload_server(unavailable).await;
+        config.reload_address = address;
+        let (client, _) = issuing_client(processor(&material));
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_agent(client, config, AgentMode::Continuous, async {
+                completed.await.expect("reload completion");
+                tokio::task::yield_now().await;
+                Ok(())
+            }),
+        )
+        .await
+        .expect("retry-sleep agent deadline")
+        .expect("shutdown during retry delay");
+        task.await.expect("reload server");
+    }
+
+    #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn continuous_mode_retries_reload_timeouts() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
@@ -2015,6 +2076,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn continuous_mode_renews_after_the_calculated_delay() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
@@ -2022,20 +2084,27 @@ mod tests {
         renew_settings.expiration_seconds = 600;
         renew_settings.renew_before = Duration::from_secs(299);
         let mut config = AgentConfig::new(renew_settings).expect("config");
-        let (address, task) = reload_sequence_server(vec![reload_ok(), reload_ok()]).await;
+        let (address, completed, task) =
+            reload_sequence_server(vec![reload_ok(), reload_ok()]).await;
         config.reload_address = address;
         let (client, state) = issuing_client(processor(&material));
-        run_agent(client, config, AgentMode::Continuous, async {
-            tokio::time::sleep(Duration::from_millis(1_500)).await;
-            Ok(())
-        })
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_agent(client, config, AgentMode::Continuous, async {
+                completed.await.expect("reload completion");
+                tokio::task::yield_now().await;
+                Ok(())
+            }),
+        )
         .await
+        .expect("renewing agent deadline")
         .expect("renewing agent");
         assert_eq!(task.await.expect("reload server").len(), 2);
         assert!(state.lock().expect("mock state").requests >= 5);
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn shutdown_preempts_initial_acquisition_and_preserves_errors() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let material = artifacts();
@@ -2057,6 +2126,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn credential_write_cleans_staging_and_reports_each_rename_failure() {
         let directory = tempfile::tempdir().expect("stage-failure directory");
         let mut calls = 0;

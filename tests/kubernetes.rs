@@ -112,6 +112,7 @@ fn processor() -> Arc<Processor> {
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn issuance_approves_then_writes_the_certificate_without_dropping_conditions() {
     let (writer, captured) = writer();
     writer
@@ -147,6 +148,7 @@ async fn issuance_approves_then_writes_the_certificate_without_dropping_conditio
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn denied_and_failed_decisions_use_the_required_subresources() {
     let (writer, captured) = writer();
     writer
@@ -190,6 +192,7 @@ async fn denied_and_failed_decisions_use_the_required_subresources() {
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn already_approved_requests_only_write_status() {
     let (writer, captured) = writer();
     writer
@@ -211,6 +214,7 @@ async fn already_approved_requests_only_write_status() {
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn event_runtime_tracks_initialization_and_tolerates_watch_errors() {
     let (writer, captured) = writer();
     let ready = Arc::new(AtomicBool::new(true));
@@ -248,6 +252,7 @@ async fn event_runtime_tracks_initialization_and_tolerates_watch_errors() {
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn runtime_shutdown_does_not_require_an_api_event() {
     let (writer, _) = writer();
     let events = futures::stream::pending::<
@@ -265,6 +270,7 @@ async fn runtime_shutdown_does_not_require_an_api_event() {
 }
 
 #[tokio::test]
+#[ntest_timeout::timeout(2_000)]
 async fn watcher_setup_can_be_cancelled_before_contacting_kubernetes() {
     let service = service_fn(|_: Request<Body>| async {
         std::future::pending::<Result<Response<Full<Bytes>>, Infallible>>().await

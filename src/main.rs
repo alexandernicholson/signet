@@ -366,6 +366,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn validates_command_configuration_and_service_accounts() {
         let account = parse_service_account("workloads:example-app").unwrap();
         assert_eq!(account.namespace(), "workloads");
@@ -396,6 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn agent_rejects_invalid_configuration_before_contacting_kubernetes() {
         let error = agent_command(AgentArgs {
             signer_name: DEFAULT_SIGNER_NAME.into(),
@@ -417,6 +419,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn run_reports_a_missing_ca_certificate() {
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing");
@@ -435,6 +438,7 @@ mod tests {
     }
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn artifact_write_rolls_back_files_created_before_an_error() {
         let directory = tempfile::tempdir().unwrap();
         let material = artifacts();
@@ -458,6 +462,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest_timeout::timeout(2_000)]
     async fn supervisor_handles_each_completion_source() {
         {
             let controller = std::future::ready(Ok::<(), ControllerError>(()));

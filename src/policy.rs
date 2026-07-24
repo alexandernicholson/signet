@@ -443,6 +443,7 @@ mod tests {
     use super::{DenialReason, map_csr_error};
 
     #[test]
+    #[ntest_timeout::timeout(2_000)]
     fn maps_every_rcgen_csr_error_class() {
         for (error, expected) in [
             (

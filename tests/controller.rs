@@ -71,6 +71,7 @@ fn processor(now: OffsetDateTime) -> Processor {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn approves_and_signs_a_new_valid_request() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let csr = object(
@@ -99,6 +100,7 @@ fn approves_and_signs_a_new_valid_request() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn signs_an_already_approved_request_without_reapproving() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let csr = object(
@@ -127,6 +129,7 @@ fn signs_an_already_approved_request_without_reapproving() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn denies_an_invalid_request_with_a_stable_reason() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let csr = object(
@@ -151,6 +154,7 @@ fn denies_an_invalid_request_with_a_stable_reason() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn marks_an_approved_but_invalid_request_failed() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let csr = object(
@@ -178,6 +182,7 @@ fn marks_an_approved_but_invalid_request_failed() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn ignores_other_signers_completed_and_denied_requests() {
     let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
     let processor = processor(now);
@@ -232,6 +237,7 @@ fn ignores_other_signers_completed_and_denied_requests() {
 }
 
 #[test]
+#[ntest_timeout::timeout(2_000)]
 fn emits_minimal_approval_denial_and_certificate_patches() {
     let approval = signet::controller::approval_patch("approved by RFC profile");
     assert_eq!(approval["status"]["conditions"][0]["type"], "Approved");
