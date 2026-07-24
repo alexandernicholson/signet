@@ -38,8 +38,36 @@ jobs:
           rustup default stable
       - name: Run all targets
         run: cargo test --locked --all-targets
-      - name: Build release binary
-        run: cargo build --locked --release
+
+  build:
+    name: Build release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build optimized binary
+        run: cargo build --locked --release --bin signet
+      - name: Smoke-test optimized binary
+        run: target/release/signet --help
+      - name: Package binary and checksum
+        run: |
+          set -euo pipefail
+          artifact="signet-x86_64-unknown-linux-gnu"
+          install -Dm755 target/release/signet "$RUNNER_TEMP/$artifact/signet"
+          tar -C "$RUNNER_TEMP" -czf "$artifact.tar.gz" "$artifact"
+          sha256sum "$artifact.tar.gz" > "$artifact.tar.gz.sha256"
+      - name: Upload release binary
+        uses: actions/upload-artifact@v5
+        with:
+          name: signet-x86_64-unknown-linux-gnu
+          path: |
+            signet-x86_64-unknown-linux-gnu.tar.gz
+            signet-x86_64-unknown-linux-gnu.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
 
   msrv:
     name: Minimum supported Rust
