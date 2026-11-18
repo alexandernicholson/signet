@@ -1,6 +1,6 @@
 //! Kubernetes CSR reconciliation and status patches.
 
-use futures::{StreamExt, pin_mut, stream::FuturesUnordered};
+use futures::{StreamExt, stream::FuturesUnordered};
 use k8s_openapi::{
     ByteString,
     api::certificates::v1::{CertificateSigningRequest, CertificateSigningRequestCondition},
@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -170,7 +171,7 @@ pub async fn run_until<F>(
     shutdown: F,
 ) -> Result<(), ControllerError>
 where
-    F: Future<Output = ()>,
+    F: Future<Output = ()> + Send,
 {
     let writer = KubernetesWriter::new(client.clone());
     let config =
@@ -198,12 +199,37 @@ pub async fn run_events<S, E, F>(
     shutdown: F,
 ) -> Result<(), ControllerError>
 where
-    S: futures::Stream<Item = Result<watcher::Event<CertificateSigningRequest>, E>>,
+    S: futures::Stream<Item = Result<watcher::Event<CertificateSigningRequest>, E>> + Send,
     E: std::fmt::Display,
-    F: Future<Output = ()>,
+    F: Future<Output = ()> + Send,
 {
-    pin_mut!(events);
-    pin_mut!(shutdown);
+    let events = events.map(|event| event.map_err(|error| error.to_string()));
+    reconcile_events(
+        Box::pin(events),
+        &writer,
+        &processor,
+        &ready,
+        Box::pin(shutdown),
+    )
+    .await
+}
+
+type EventStream<'a> = Pin<
+    Box<
+        dyn futures::Stream<Item = Result<watcher::Event<CertificateSigningRequest>, String>>
+            + Send
+            + 'a,
+    >,
+>;
+
+/// The event loop behind [`run_events`], compiled once for every stream type.
+async fn reconcile_events(
+    mut events: EventStream<'_>,
+    writer: &KubernetesWriter,
+    processor: &Processor,
+    ready: &AtomicBool,
+    mut shutdown: Pin<Box<dyn Future<Output = ()> + Send + '_>>,
+) -> Result<(), ControllerError> {
     let mut state = Reconciliations::default();
     let mut tasks = FuturesUnordered::new();
     let mut events_open = true;
@@ -213,13 +239,13 @@ where
             Some((csr, issued)) = tasks.next() => {
                 let issued: bool = issued?;
                 if let Some(next) = state.finish(&csr, issued) {
-                    tasks.push(reconcile(&writer, &processor, next));
+                    tasks.push(reconcile(writer, processor, next));
                 }
             }
             event = events.next(), if events_open && tasks.len() < MAX_CONCURRENT_RECONCILIATIONS => match event {
                 Some(Ok(watcher::Event::Apply(csr) | watcher::Event::InitApply(csr))) => {
                     if let Some(csr) = state.admit(csr) {
-                        tasks.push(reconcile(&writer, &processor, csr));
+                        tasks.push(reconcile(writer, processor, csr));
                     }
                 }
                 Some(Ok(watcher::Event::Init)) => {
