@@ -227,11 +227,8 @@ async fn run_command(args: RunArgs) -> Result<()> {
         .await
         .with_context(|| format!("bind health server at {}", args.health_address))?;
     let signer_name = processor.signer_name();
-    tracing::info!(
-        signer_name,
-        health_address = %args.health_address,
-        "starting Signet CSR issuer"
-    );
+    let health_address = args.health_address;
+    tracing::info!(signer_name, %health_address, "starting Signet CSR issuer");
     let controller = run_until(
         client,
         processor,

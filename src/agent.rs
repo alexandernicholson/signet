@@ -289,7 +289,8 @@ async fn ensure_credential(
     if let Some(existing) = load_existing(config, &anchors, now)? {
         let refresh_at = existing.not_after
             - time::Duration::try_from(config.renew_before)
-                .map_err(|_| AgentError::Configuration("renew-before is too large"))?;
+                .ok()
+                .ok_or(AgentError::Configuration("renew-before is too large"))?;
         if refresh_at > now {
             return Ok(existing);
         }
@@ -308,7 +309,8 @@ async fn ensure_credential(
         spec: CertificateSigningRequestSpec {
             expiration_seconds: Some(
                 i32::try_from(config.expiration_seconds)
-                    .map_err(|_| AgentError::Configuration("expiration-seconds is too large"))?,
+                    .ok()
+                    .ok_or(AgentError::Configuration("expiration-seconds is too large"))?,
             ),
             request: ByteString(pending.request_pem.clone()),
             signer_name: config.signer_name.clone(),
@@ -510,7 +512,10 @@ fn validate_trust_anchor(der: &[u8], now: OffsetDateTime) -> Result<(), AgentErr
     }
     let basic = certificate
         .basic_constraints()
-        .map_err(|_| AgentError::TrustBundle("basic constraints cannot be parsed"))?
+        .ok()
+        .ok_or(AgentError::TrustBundle(
+            "basic constraints cannot be parsed",
+        ))?
         .ok_or(AgentError::TrustBundle("basic constraints are missing"))?;
     if !basic.critical || !basic.value.ca || basic.value.path_len_constraint != Some(0) {
         return Err(AgentError::TrustBundle(
@@ -519,7 +524,8 @@ fn validate_trust_anchor(der: &[u8], now: OffsetDateTime) -> Result<(), AgentErr
     }
     let usage = certificate
         .key_usage()
-        .map_err(|_| AgentError::TrustBundle("key usage cannot be parsed"))?
+        .ok()
+        .ok_or(AgentError::TrustBundle("key usage cannot be parsed"))?
         .ok_or(AgentError::TrustBundle("key usage is missing"))?;
     if !usage.critical || usage.value.flags != ((1 << 5) | (1 << 6)) {
         return Err(AgentError::TrustBundle("trust anchor key usage is invalid"));
@@ -626,7 +632,10 @@ fn validate_leaf_extensions(
     }
     let basic = certificate
         .basic_constraints()
-        .map_err(|_| AgentError::Certificate("basic constraints cannot be parsed"))?
+        .ok()
+        .ok_or(AgentError::Certificate(
+            "basic constraints cannot be parsed",
+        ))?
         .ok_or(AgentError::Certificate("basic constraints are missing"))?;
     if !basic.critical || basic.value.ca {
         return Err(AgentError::Certificate(
@@ -635,14 +644,18 @@ fn validate_leaf_extensions(
     }
     let usage = certificate
         .key_usage()
-        .map_err(|_| AgentError::Certificate("key usage cannot be parsed"))?
+        .ok()
+        .ok_or(AgentError::Certificate("key usage cannot be parsed"))?
         .ok_or(AgentError::Certificate("key usage is missing"))?;
     if !usage.critical || usage.value.flags != 1 {
         return Err(AgentError::Certificate("leaf key usage is invalid"));
     }
     let extended = certificate
         .extended_key_usage()
-        .map_err(|_| AgentError::Certificate("extended key usage cannot be parsed"))?
+        .ok()
+        .ok_or(AgentError::Certificate(
+            "extended key usage cannot be parsed",
+        ))?
         .ok_or(AgentError::Certificate("extended key usage is missing"))?;
     if extended.critical
         || extended.value.any
@@ -660,7 +673,8 @@ fn validate_leaf_extensions(
     }
     let san = certificate
         .subject_alternative_name()
-        .map_err(|_| AgentError::Certificate("subjectAltName cannot be parsed"))?
+        .ok()
+        .ok_or(AgentError::Certificate("subjectAltName cannot be parsed"))?
         .ok_or(AgentError::Certificate("subjectAltName is missing"))?;
     if !san.critical
         || !matches!(san.value.general_names.as_slice(), [GeneralName::URI(uri)] if *uri == identity)

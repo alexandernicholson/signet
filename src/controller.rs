@@ -261,12 +261,8 @@ async fn apply_decision(
     let now = OffsetDateTime::now_utc();
     let decision = processor.evaluate(csr, now, crate::authority::random_serial)?;
     if let Err(error) = writer.apply(csr, &decision).await {
-        let csr_name = csr.metadata.name.as_deref().unwrap_or("<unnamed>");
-        tracing::warn!(
-            csr = csr_name,
-            %error,
-            "failed to apply CSR reconciliation decision"
-        );
+        let csr = csr.metadata.name.as_deref().unwrap_or("<unnamed>");
+        tracing::warn!(csr, %error, "failed to apply CSR reconciliation decision");
         return Ok(false);
     }
     Ok(matches!(decision, Decision::Issue { .. }))
@@ -370,7 +366,7 @@ impl Processor {
         &self,
         csr: &CertificateSigningRequest,
         now: OffsetDateTime,
-        serial: impl FnOnce() -> Result<[u8; 20], AuthorityError>,
+        serial: fn() -> Result<[u8; 20], AuthorityError>,
     ) -> Result<Decision, AuthorityError> {
         if csr.spec.signer_name != self.policy.signer_name() || has_certificate(csr) {
             return Ok(Decision::Ignore);

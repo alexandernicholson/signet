@@ -116,8 +116,12 @@ impl SigningAuthority {
                 "certificate PEM has trailing data",
             ));
         }
-        let (der_remainder, certificate) = parse_x509_certificate(&pem.contents)
-            .map_err(|_| AuthorityError::InvalidCa("certificate DER cannot be parsed"))?;
+        let (der_remainder, certificate) =
+            parse_x509_certificate(&pem.contents)
+                .ok()
+                .ok_or(AuthorityError::InvalidCa(
+                    "certificate DER cannot be parsed",
+                ))?;
         if !der_remainder.is_empty() {
             return Err(AuthorityError::InvalidCa(
                 "certificate DER has trailing data",
@@ -141,7 +145,10 @@ impl SigningAuthority {
         }
         let constraints = certificate
             .basic_constraints()
-            .map_err(|_| AuthorityError::InvalidCa("basic constraints cannot be parsed"))?
+            .ok()
+            .ok_or(AuthorityError::InvalidCa(
+                "basic constraints cannot be parsed",
+            ))?
             .ok_or(AuthorityError::InvalidCa("basic constraints are missing"))?;
         if !constraints.critical
             || !constraints.value.ca
@@ -153,7 +160,8 @@ impl SigningAuthority {
         }
         let usages = certificate
             .key_usage()
-            .map_err(|_| AuthorityError::InvalidCa("key usage cannot be parsed"))?
+            .ok()
+            .ok_or(AuthorityError::InvalidCa("key usage cannot be parsed"))?
             .ok_or(AuthorityError::InvalidCa("key usage is missing"))?;
         if !usages.critical || usages.value.flags != ((1 << 5) | (1 << 6)) {
             return Err(AuthorityError::InvalidCa("CA key usage is invalid"));
@@ -199,7 +207,8 @@ impl SigningAuthority {
         let uri = approved
             .identity()
             .try_into()
-            .map_err(|_| AuthorityError::InvalidCa("authorized SPIFFE ID is not IA5"))?;
+            .ok()
+            .ok_or(AuthorityError::InvalidCa("authorized SPIFFE ID is not IA5"))?;
         let mut params = CertificateParams::new(Vec::<String>::new())?;
         params.distinguished_name = DistinguishedName::new();
         params.subject_alt_names = vec![SanType::URI(uri)];

@@ -13,6 +13,7 @@ All notable changes to Signet are documented here.
 - A NetworkPolicy now denies all ingress to the signer pod. Kubelet probes from the node are still allowed.
 - Base images are pinned by digest and CI actions by commit SHA.
 - The configured `signerName` path is limited to characters that cannot change the watch field selector.
+- Updated rustls to 0.23.46, rustls-webpki to 0.103.17, and webpki-root-certs to 1.0.12 for RUSTSEC-2026-0285, -0346, -0348, -0349, -0382, and -0383. Also updated tokio, rustix, and event-listener past their unsoundness advisories.
 
 ### Performance
 

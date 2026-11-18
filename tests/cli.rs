@@ -4,7 +4,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use assert_cmd::Command;
@@ -110,9 +110,8 @@ fn serve_agent_api(listener: &TcpListener, processor: &Processor) {
     }
 }
 
-fn credential_agent(ca_bundle: &Path, output_directory: &Path) -> Command {
-    let mut command = Command::cargo_bin("signet").expect("binary");
-    command.args([
+fn agent_args<'a>(ca_bundle: &'a Path, output_directory: &'a Path) -> [&'a str; 15] {
+    [
         "agent",
         "--trust-domain",
         "example.com",
@@ -128,7 +127,12 @@ fn credential_agent(ca_bundle: &Path, output_directory: &Path) -> Command {
         "2",
         "--poll-interval-millis",
         "1",
-    ]);
+    ]
+}
+
+fn credential_agent(ca_bundle: &Path, output_directory: &Path) -> Command {
+    let mut command = Command::cargo_bin("signet").expect("binary");
+    command.args(agent_args(ca_bundle, output_directory));
     command
 }
 
@@ -146,10 +150,8 @@ fn help_names_signet_and_its_crd_free_commands() {
         .stdout(predicate::str::contains("run"));
 }
 
-#[test]
-#[ntest_timeout::timeout(2_000)]
-fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors() {
-    let directory = tempdir().expect("temporary directory");
+/// Writes a trust bundle and starts a fake API that issues one agent credential.
+fn agent_api(directory: &Path) -> (PathBuf, PathBuf, std::thread::JoinHandle<()>) {
     let artifacts = bootstrap(
         BootstrapConfig {
             common_name: "Agent CLI CA".into(),
@@ -158,7 +160,7 @@ fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors(
         OffsetDateTime::now_utc(),
     )
     .expect("bootstrap");
-    let bundle = directory.path().join("bundle.pem");
+    let bundle = directory.join("bundle.pem");
     fs::write(&bundle, &artifacts.trust_bundle_pem).expect("write trust bundle");
     let authority =
         SigningAuthority::from_pem(&artifacts.ca_certificate_pem, &artifacts.ca_private_key_pem)
@@ -175,12 +177,20 @@ fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors(
     let listener = TcpListener::bind("127.0.0.1:0").expect("agent API listener");
     let api_address = listener.local_addr().expect("agent API address");
     let server = std::thread::spawn(move || serve_agent_api(&listener, &processor));
-    let kubeconfig = directory.path().join("agent-kubeconfig");
+    let kubeconfig = directory.join("agent-kubeconfig");
     fs::write(
         &kubeconfig,
         TEST_KUBECONFIG.replace("127.0.0.1:9", &api_address.to_string()),
     )
     .expect("write agent kubeconfig");
+    (bundle, kubeconfig, server)
+}
+
+#[test]
+#[ntest_timeout::timeout(2_000)]
+fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors() {
+    let directory = tempdir().expect("temporary directory");
+    let (bundle, kubeconfig, server) = agent_api(directory.path());
     let output = directory.path().join("identity");
     credential_agent(&bundle, &output)
         .arg("--once")
@@ -209,6 +219,53 @@ fn agent_once_acquires_a_real_credential_and_continuous_mode_reports_api_errors(
         .stderr(predicate::str::contains(
             "load Kubernetes client configuration",
         ));
+}
+
+#[cfg(unix)]
+#[test]
+#[ntest_timeout::timeout(2_000)]
+fn continuous_agent_stops_cleanly_on_sigterm_after_issuance() {
+    use std::{
+        process::Stdio,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let directory = tempdir().expect("temporary directory");
+    let (bundle, kubeconfig, server) = agent_api(directory.path());
+    let output = directory.path().join("identity");
+    // Nothing listens here, so the agent keeps retrying the reload until stopped.
+    let reload = TcpListener::bind("127.0.0.1:0").expect("reserve reload port");
+    let reload_address = reload.local_addr().expect("reload address").to_string();
+    drop(reload);
+    let binary = Command::cargo_bin("signet").expect("binary");
+    let child = std::process::Command::new(binary.get_program())
+        .args(agent_args(&bundle, &output))
+        .args(["--reload-address", &reload_address])
+        .env("KUBECONFIG", &kubeconfig)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start agent");
+
+    server.join().expect("agent API server");
+    let deadline = Instant::now() + Duration::from_millis(1_500);
+    while !output.join("tls.crt").is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "agent did not write its credential"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let signal = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(signal.success());
+    let result = child.wait_with_output().expect("agent exit");
+    assert!(result.status.success(), "agent did not stop cleanly");
+    // Only one-shot mode reports readiness.
+    assert!(!String::from_utf8_lossy(&result.stdout).contains("credential is ready"));
 }
 
 #[test]
