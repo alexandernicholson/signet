@@ -39,6 +39,13 @@ fn approved() -> signet::policy::ApprovedCsr {
     .expect("test CSR")
 }
 
+fn pem_der(pem: &str) -> Vec<u8> {
+    parse_x509_pem(pem.as_bytes())
+        .expect("certificate PEM")
+        .1
+        .contents
+}
+
 fn artifacts(now: OffsetDateTime) -> signet::authority::BootstrapArtifacts {
     bootstrap(
         BootstrapConfig {
@@ -159,13 +166,13 @@ fn issues_the_exact_interlink_leaf_profile() {
             .certificate_pem
             .starts_with("-----BEGIN CERTIFICATE-----\n")
     );
-    assert_eq!(issued.identity, IDENTITY);
     assert_eq!(
         issued.not_after,
         now + time::Duration::hours(24) - time::Duration::minutes(5)
     );
 
-    let (_, leaf) = parse_x509_certificate(&issued.certificate_der).expect("leaf");
+    let leaf_der = pem_der(&issued.certificate_pem);
+    let (_, leaf) = parse_x509_certificate(&leaf_der).expect("leaf");
     let (_, ca_pem) = parse_x509_pem(artifacts.ca_certificate_pem.as_bytes()).expect("CA PEM");
     let (_, ca) = parse_x509_certificate(&ca_pem.contents).expect("CA");
 
@@ -214,7 +221,7 @@ fn issues_the_exact_interlink_leaf_profile() {
     assert!(extended.value.server_auth);
     assert!(extended.value.client_auth);
     assert!(!extended.value.any);
-    assert!(extended.value.other.is_empty());
+    assert_eq!(extended.value.other, []);
 
     assert_eq!(
         leaf.validity().not_before.timestamp(),
@@ -245,8 +252,12 @@ fn serials_are_positive_nonzero_and_distinct() {
     let second = authority
         .issue(&approved(), now, [0xFF; 20])
         .expect("second leaf");
-    let (_, first) = parse_x509_certificate(&first.certificate_der).expect("first cert");
-    let (_, second) = parse_x509_certificate(&second.certificate_der).expect("second cert");
+    let (first_der, second_der) = (
+        pem_der(&first.certificate_pem),
+        pem_der(&second.certificate_pem),
+    );
+    let (_, first) = parse_x509_certificate(&first_der).expect("first cert");
+    let (_, second) = parse_x509_certificate(&second_der).expect("second cert");
 
     assert_ne!(first.raw_serial(), second.raw_serial());
     assert_ne!(first.raw_serial(), &[0]);
@@ -419,7 +430,7 @@ fn pem_output_obeys_rfc7468_line_width() {
     for pem in [&artifacts.ca_certificate_pem, &artifacts.ca_private_key_pem] {
         let lines = pem.lines().collect::<Vec<_>>();
         for line in &lines[1..lines.len() - 1] {
-            assert!(!line.is_empty());
+            assert_ne!(*line, "");
             assert!(line.len() <= 64);
         }
     }

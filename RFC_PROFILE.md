@@ -52,3 +52,7 @@ The CSR URI MUST equal that derived identity byte-for-byte. Signet MUST NOT auth
 ## Kubernetes signer policy
 
 The native `certificates.k8s.io/v1` API supplies authenticated requester metadata and transport. It does not weaken the RFC profile. Signet accepts only its configured `signerName`, exact usages `digital signature`, `server auth`, and `client auth`, an allowlisted service account, and an expiration request between Kubernetes' 600-second floor and Signet's configured maximum. All other requests are denied with a stable reason code.
+
+A request that satisfies this policy but cannot be issued, for example because the leaf would outlive the CA certificate, is denied with reason `Issuance`, or marked `Failed` with that reason if it was already approved. Such a request never stops the signer.
+
+The configured `signerName` path may contain only ASCII letters, digits, `-`, `.`, `_`, and `/`, so it can never change the watch field selector built from it.

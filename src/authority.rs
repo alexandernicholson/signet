@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use rcgen::{
-    BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
-    DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType, SerialNumber,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    Issuer, KeyPair, KeyUsagePurpose, SanType, SerialNumber,
 };
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -31,9 +31,7 @@ pub struct BootstrapArtifacts {
 
 #[derive(Clone, Debug)]
 pub struct IssuedCertificate {
-    pub certificate_der: Vec<u8>,
     pub certificate_pem: String,
-    pub identity: String,
     pub not_after: OffsetDateTime,
 }
 
@@ -198,9 +196,8 @@ impl SigningAuthority {
             return Err(AuthorityError::CaValidity);
         }
 
-        let identity = approved.identity().to_owned();
-        let uri = identity
-            .as_str()
+        let uri = approved
+            .identity()
             .try_into()
             .map_err(|_| AuthorityError::InvalidCa("authorized SPIFFE ID is not IA5"))?;
         let mut params = CertificateParams::new(Vec::<String>::new())?;
@@ -217,15 +214,9 @@ impl SigningAuthority {
         params.not_after = not_after;
         params.serial_number = Some(SerialNumber::from_slice(&normalize_serial(serial_seed)));
 
-        let signing_request = CertificateSigningRequestParams {
-            params,
-            public_key: approved.request().public_key.clone(),
-        };
-        let certificate = signing_request.signed_by(&self.issuer)?;
+        let certificate = params.signed_by(approved.public_key(), &self.issuer)?;
         Ok(IssuedCertificate {
-            certificate_der: certificate.der().to_vec(),
             certificate_pem: certificate.pem(),
-            identity,
             not_after,
         })
     }

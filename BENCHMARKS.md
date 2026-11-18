@@ -34,6 +34,19 @@ The second pass parses authenticated service-account usernames into borrowed nam
 
 The issuance path is dominated by Ed25519 certificate construction and signing. Its observed changes were smaller than run-to-run variability, so no issuance improvement is claimed. The completed-CSR control path changed by -1.5%, also within the observed variability and unaffected by either optimization.
 
+### Crypto backend and single-parse pass
+
+These measurements were taken back to back on the same Apple M4 Max, comparing `HEAD` before the change (`db091f4`) with the new tree. Each command had 3 warmups and 15 measured runs.
+
+| Build | Review 20,000 | Issue 50,000 | Ignore 100,000,000 |
+| --- | ---: | ---: | ---: |
+| Before (`db091f4`) | 463.3 ± 4.2 ms | 526.8 ± 4.6 ms | 358.2 ± 26.4 ms |
+| aws-lc-rs + single parse | 441.3 ± 2.0 ms | 385.9 ± 4.7 ms | 375.3 ± 19.8 ms |
+
+Ed25519 signing in aws-lc-rs uses s2n-bignum assembly. It took 4.5 µs per signature, compared with 7.6 µs in ring, so issuance improved 26.7%. Review improved 4.7%: verification is about 6% faster, and each request is now parsed once instead of twice. Ed25519 verification is now about 97% of review time. Signing is about 62% of issuance time; most of the rest is building the certificate DER in rcgen. The ignore path changed less than its run-to-run variability, so no change is claimed.
+
+The benchmark measures one operation at a time, so it cannot show the controller fix. Before, each new CSR was reviewed and signed twice, because Signet reprocessed the watch event caused by its own approval. Signet now skips that event, so a CSR costs one review and one issue: about 29.8 µs, down from about 67.4 µs.
+
 ## Benchmark discipline
 
 - Setup, CA generation, key generation, and CSR generation happen before the measured loop.

@@ -182,7 +182,7 @@ async fn agent_command(args: AgentArgs) -> Result<()> {
         .await
         .context("load Kubernetes client configuration")?;
     tracing::info!(%identity, ?mode, "starting Signet workload credential agent");
-    run_agent(client, config, mode, tokio::signal::ctrl_c()).await?;
+    run_agent(client, config, mode, shutdown_signal()).await?;
     if mode == AgentMode::Once {
         println!("Interlink credential is ready for {identity}");
     }
@@ -239,7 +239,7 @@ async fn run_command(args: RunArgs) -> Result<()> {
         std::future::pending(),
     );
     let health = signet::health::serve(listener, ready, std::future::pending());
-    let signal = tokio::signal::ctrl_c();
+    let signal = shutdown_signal();
     tokio::pin!(controller, health, signal);
     supervise(controller.as_mut(), health.as_mut(), signal.as_mut()).await
 }
@@ -255,6 +255,17 @@ async fn supervise(
         result = &mut signal => result.context("listen for shutdown signal")?,
     }
     Ok(())
+}
+
+/// Completes when Kubernetes (SIGTERM) or an operator (SIGINT) requests shutdown.
+async fn shutdown_signal() -> io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 fn parse_service_account(value: &str) -> Result<ServiceAccount> {

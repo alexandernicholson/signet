@@ -1,6 +1,6 @@
 //! Kubernetes CSR reconciliation and status patches.
 
-use futures::{StreamExt, pin_mut};
+use futures::{StreamExt, pin_mut, stream::FuturesUnordered};
 use k8s_openapi::{
     ByteString,
     api::certificates::v1::{CertificateSigningRequest, CertificateSigningRequestCondition},
@@ -12,6 +12,7 @@ use kube::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
     future::Future,
     sync::{
         Arc,
@@ -25,6 +26,9 @@ use crate::{
     authority::{AuthorityError, SigningAuthority},
     policy::{CsrRequest, DenialReason, Policy},
 };
+
+/// Upper bound on CSRs reconciled concurrently; each holds at most two API writes.
+const MAX_CONCURRENT_RECONCILIATIONS: usize = 16;
 
 /// A side-effect-free decision for one immutable Kubernetes CSR.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -177,10 +181,15 @@ where
 
 /// Reconciles an event stream. Exposed separately for deterministic runtime tests.
 ///
+/// Distinct CSRs are reconciled concurrently, up to a fixed bound. Events for a
+/// CSR that is already being reconciled are coalesced and applied afterwards, so
+/// writes for one CSR never race each other. Returns after the stream ends and
+/// every in-flight reconciliation completes.
+///
 /// # Errors
 ///
-/// Returns [`ControllerError`] when random serial generation or certificate
-/// evaluation fails. Watch and per-object write errors are logged and skipped.
+/// Returns [`ControllerError`] when random serial generation fails. Watch and
+/// per-object write errors are logged and skipped.
 pub async fn run_events<S, E, F>(
     events: S,
     writer: KubernetesWriter,
@@ -195,36 +204,140 @@ where
 {
     pin_mut!(events);
     pin_mut!(shutdown);
-    loop {
+    let mut state = Reconciliations::default();
+    let mut tasks = FuturesUnordered::new();
+    let mut events_open = true;
+    while events_open || !tasks.is_empty() {
         tokio::select! {
             () = &mut shutdown => return Ok(()),
-            event = events.next() => match event {
+            Some((csr, issued)) = tasks.next() => {
+                let issued: bool = issued?;
+                if let Some(next) = state.finish(&csr, issued) {
+                    tasks.push(reconcile(&writer, &processor, next));
+                }
+            }
+            event = events.next(), if events_open && tasks.len() < MAX_CONCURRENT_RECONCILIATIONS => match event {
                 Some(Ok(watcher::Event::Apply(csr) | watcher::Event::InitApply(csr))) => {
-                    let serial = crate::authority::random_serial()?;
-                    let decision = processor.evaluate(&csr, OffsetDateTime::now_utc(), serial)?;
-                    if let Err(error) = writer.apply(&csr, &decision).await {
-                        let csr_name = csr.metadata.name.as_deref().unwrap_or("<unnamed>");
-                        tracing::warn!(
-                            csr = csr_name,
-                            %error,
-                            "failed to apply CSR reconciliation decision"
-                        );
+                    if let Some(csr) = state.admit(csr) {
+                        tasks.push(reconcile(&writer, &processor, csr));
                     }
                 }
                 Some(Ok(watcher::Event::Init)) => {
                     ready.store(false, Ordering::Release);
+                    // A relist delivers current state, so earlier echoes cannot be stale.
+                    state.issued.clear();
                 }
                 Some(Ok(watcher::Event::InitDone)) => {
                     ready.store(true, Ordering::Release);
                 }
-                Some(Ok(watcher::Event::Delete(_))) => {}
+                Some(Ok(watcher::Event::Delete(csr))) => {
+                    state.issued.remove(issue_key(&csr));
+                }
                 Some(Err(error)) => {
                     tracing::warn!(%error, "Kubernetes CSR watch interrupted");
                 }
-                None => return Ok(()),
+                None => events_open = false,
             }
         }
     }
+    Ok(())
+}
+
+/// Evaluates and applies one CSR, returning it with whether a certificate was written.
+async fn reconcile(
+    writer: &KubernetesWriter,
+    processor: &Processor,
+    csr: CertificateSigningRequest,
+) -> (CertificateSigningRequest, Result<bool, ControllerError>) {
+    let result = apply_decision(writer, processor, &csr).await;
+    (csr, result)
+}
+
+async fn apply_decision(
+    writer: &KubernetesWriter,
+    processor: &Processor,
+    csr: &CertificateSigningRequest,
+) -> Result<bool, ControllerError> {
+    let now = OffsetDateTime::now_utc();
+    let decision = processor.evaluate(csr, now, crate::authority::random_serial)?;
+    if let Err(error) = writer.apply(csr, &decision).await {
+        let csr_name = csr.metadata.name.as_deref().unwrap_or("<unnamed>");
+        tracing::warn!(
+            csr = csr_name,
+            %error,
+            "failed to apply CSR reconciliation decision"
+        );
+        return Ok(false);
+    }
+    Ok(matches!(decision, Decision::Issue { .. }))
+}
+
+/// Per-CSR bookkeeping for concurrent reconciliation.
+#[derive(Default)]
+struct Reconciliations {
+    /// CSR names being reconciled, each with the newest event observed meanwhile.
+    in_flight: HashMap<String, Option<CertificateSigningRequest>>,
+    /// CSRs whose certificate this process wrote but has not yet observed.
+    issued: HashSet<String>,
+}
+
+impl Reconciliations {
+    /// Returns the CSR to reconcile now, or `None` when it needs no work or was queued.
+    fn admit(&mut self, csr: CertificateSigningRequest) -> Option<CertificateSigningRequest> {
+        let key = issue_key(&csr);
+        if has_certificate(&csr) {
+            self.issued.remove(key);
+            return None;
+        }
+        // Signet's own approval patch echoes back as an approved CSR without a
+        // certificate; once the certificate write succeeded, that echo is stale.
+        if self.issued.contains(key) {
+            return None;
+        }
+        match self
+            .in_flight
+            .entry(csr.metadata.name.clone().unwrap_or_default())
+        {
+            Entry::Occupied(mut queued) => {
+                queued.insert(Some(csr));
+                None
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(None);
+                Some(csr)
+            }
+        }
+    }
+
+    /// Records a finished reconciliation and returns the next queued event for the CSR.
+    fn finish(
+        &mut self,
+        csr: &CertificateSigningRequest,
+        issued: bool,
+    ) -> Option<CertificateSigningRequest> {
+        if issued {
+            self.issued.insert(issue_key(csr).to_owned());
+        }
+        let name = csr.metadata.name.as_deref().unwrap_or_default();
+        let queued = self.in_flight.remove(name).flatten()?;
+        self.admit(queued)
+    }
+}
+
+/// Identifies one CSR object; the UID distinguishes a recreated name.
+fn issue_key(csr: &CertificateSigningRequest) -> &str {
+    csr.metadata
+        .uid
+        .as_deref()
+        .or(csr.metadata.name.as_deref())
+        .unwrap_or_default()
+}
+
+fn has_certificate(csr: &CertificateSigningRequest) -> bool {
+    csr.status
+        .as_ref()
+        .and_then(|status| status.certificate.as_ref())
+        .is_some_and(|certificate| !certificate.0.is_empty())
 }
 
 /// Holds immutable policy and cached CA material for reconciliations.
@@ -246,26 +359,25 @@ impl Processor {
 
     /// Evaluates one CSR without performing Kubernetes API writes.
     ///
+    /// `serial` is called only when a certificate is about to be issued.
+    /// Issuance failures for a policy-valid request become a denial, or a
+    /// failure when the request is already approved.
+    ///
     /// # Errors
     ///
-    /// Returns [`AuthorityError`] when an approved request cannot be issued.
+    /// Returns [`AuthorityError`] only when `serial` fails.
     pub fn evaluate(
         &self,
         csr: &CertificateSigningRequest,
         now: OffsetDateTime,
-        serial: [u8; 20],
+        serial: impl FnOnce() -> Result<[u8; 20], AuthorityError>,
     ) -> Result<Decision, AuthorityError> {
-        if csr.spec.signer_name != self.policy.signer_name() {
+        if csr.spec.signer_name != self.policy.signer_name() || has_certificate(csr) {
             return Ok(Decision::Ignore);
         }
-        let status = csr.status.as_ref();
-        if status
-            .and_then(|status| status.certificate.as_ref())
-            .is_some_and(|certificate| !certificate.0.is_empty())
-        {
-            return Ok(Decision::Ignore);
-        }
-        let conditions = status
+        let conditions = csr
+            .status
+            .as_ref()
             .and_then(|status| status.conditions.as_deref())
             .unwrap_or_default();
         if conditions.iter().any(|condition| {
@@ -294,26 +406,26 @@ impl Processor {
                 .and_then(|seconds| u32::try_from(seconds).ok()),
             pem: &csr.spec.request.0,
         };
-        let approved_csr = match self.policy.review(request) {
-            Ok(approved_csr) => approved_csr,
-            Err(error) if approved => {
-                return Ok(Decision::Fail {
-                    reason: error.reason(),
-                    message: error.to_string(),
-                });
-            }
-            Err(error) => {
-                return Ok(Decision::Deny {
-                    reason: error.reason(),
-                    message: error.to_string(),
-                });
-            }
+        let (reason, message) = match self.policy.review(request) {
+            Ok(approved_csr) => match self.authority.issue(&approved_csr, now, serial()?) {
+                Ok(issued) => {
+                    return Ok(Decision::Issue {
+                        approve: !approved,
+                        reason: "SignetPolicyApproved",
+                        certificate_pem: issued.certificate_pem,
+                    });
+                }
+                Err(error) => (
+                    DenialReason::Issuance,
+                    format!("certificate issuance failed: {error}"),
+                ),
+            },
+            Err(error) => (error.reason(), error.to_string()),
         };
-        let issued = self.authority.issue(&approved_csr, now, serial)?;
-        Ok(Decision::Issue {
-            approve: !approved,
-            reason: "SignetPolicyApproved",
-            certificate_pem: issued.certificate_pem,
+        Ok(if approved {
+            Decision::Fail { reason, message }
+        } else {
+            Decision::Deny { reason, message }
         })
     }
 }

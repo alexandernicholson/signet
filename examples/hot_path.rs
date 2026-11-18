@@ -90,7 +90,7 @@ fn issue(fixture: &Fixture, iterations: u64) -> anyhow::Result<usize> {
             fixture
                 .authority
                 .issue(black_box(&approved), fixture.now, black_box(serial))?;
-        checksum ^= black_box(certificate.certificate_der.len());
+        checksum ^= black_box(certificate.certificate_pem.len());
     }
     Ok(checksum)
 }
@@ -114,7 +114,8 @@ fn ignored(fixture: Fixture, iterations: u64) -> anyhow::Result<usize> {
     };
     let mut checksum = 0_usize;
     for _ in 0..iterations {
-        let decision = processor.evaluate(black_box(&csr), fixture.now, black_box([1_u8; 20]))?;
+        let decision =
+            processor.evaluate(black_box(&csr), fixture.now, || Ok(black_box([1_u8; 20])))?;
         checksum ^= black_box(usize::from(matches!(decision, Decision::Ignore)));
     }
     Ok(checksum)

@@ -390,6 +390,16 @@ fn rejects_every_identity_shape_except_one_exact_uri_san() {
 #[test]
 #[ntest_timeout::timeout(2_000)]
 fn validates_policy_configuration_before_serving() {
+    // Field-selector syntax in the path would change which CSRs the watch selects.
+    assert!(
+        Policy::new(
+            "example.com/signet,spec.signerName!=x",
+            TRUST_DOMAIN,
+            &[],
+            Duration::from_secs(600)
+        )
+        .is_err()
+    );
     assert!(Policy::new("bad", TRUST_DOMAIN, &[], Duration::from_secs(600)).is_err());
     assert!(Policy::new(SIGNER_NAME, "not a domain", &[], Duration::from_secs(600)).is_err());
     assert!(Policy::new(SIGNER_NAME, TRUST_DOMAIN, &[], Duration::from_secs(599)).is_err());
@@ -416,6 +426,7 @@ fn validates_policy_configuration_before_serving() {
         DenialReason::Subject,
         DenialReason::Extensions,
         DenialReason::Identity,
+        DenialReason::Issuance,
     ] {
         assert_eq!(reason.to_string(), reason.as_str());
     }

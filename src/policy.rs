@@ -2,10 +2,11 @@
 
 use std::{collections::BTreeSet, fmt, time::Duration};
 
-use rcgen::{CertificateSigningRequestParams, IsCa, SanType};
+use rcgen::{PublicKeyData, SignatureAlgorithm};
 use thiserror::Error;
 use x509_parser::{
     certification_request::X509CertificationRequest,
+    extensions::{GeneralName, ParsedExtension},
     oid_registry::{OID_PKCS9_EXTENSION_REQUEST, OID_SIG_ED25519},
     pem::parse_x509_pem,
     prelude::FromDer,
@@ -71,12 +72,26 @@ pub struct CsrRequest<'a> {
     pub pem: &'a [u8],
 }
 
-/// The parsed CSR and identity authorized by [`Policy`].
+/// The proof-of-possession-verified Ed25519 key from an approved request.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Ed25519PublicKey([u8; 32]);
+
+impl PublicKeyData for Ed25519PublicKey {
+    fn der_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn algorithm(&self) -> &'static SignatureAlgorithm {
+        &rcgen::PKCS_ED25519
+    }
+}
+
+/// The identity and verified key authorized by [`Policy`].
 #[derive(Debug)]
 pub struct ApprovedCsr {
     identity: String,
     ttl: Duration,
-    request: CertificateSigningRequestParams,
+    public_key: Ed25519PublicKey,
 }
 
 impl ApprovedCsr {
@@ -90,8 +105,8 @@ impl ApprovedCsr {
         self.ttl
     }
 
-    pub(crate) const fn request(&self) -> &CertificateSigningRequestParams {
-        &self.request
+    pub(crate) const fn public_key(&self) -> &Ed25519PublicKey {
+        &self.public_key
     }
 }
 
@@ -109,6 +124,8 @@ pub enum DenialReason {
     Subject,
     Extensions,
     Identity,
+    /// The request satisfied policy but the CA could not issue it.
+    Issuance,
 }
 
 impl DenialReason {
@@ -126,6 +143,7 @@ impl DenialReason {
             Self::Subject => "Subject",
             Self::Extensions => "Extensions",
             Self::Identity => "Identity",
+            Self::Issuance => "Issuance",
         }
     }
 }
@@ -238,13 +256,12 @@ impl Policy {
     /// request field or signed PKCS #10 field violates the profile.
     pub fn review(&self, request: CsrRequest<'_>) -> Result<ApprovedCsr, PolicyError> {
         let (namespace, name, ttl) = self.authorize(&request)?;
-        let parsed = parse_csr(request.pem)?;
-        let expected_identity = format!("spiffe://{}/ns/{namespace}/sa/{name}", self.trust_domain);
-        validate_requested_identity(&parsed, &expected_identity)?;
+        let identity = format!("spiffe://{}/ns/{namespace}/sa/{name}", self.trust_domain);
+        let public_key = parse_csr(request.pem, &identity)?;
         Ok(ApprovedCsr {
-            identity: expected_identity,
+            identity,
             ttl,
-            request: parsed,
+            public_key,
         })
     }
 
@@ -294,7 +311,9 @@ impl Policy {
     }
 }
 
-fn parse_csr(pem_bytes: &[u8]) -> Result<CertificateSigningRequestParams, PolicyError> {
+/// Parses the request once, verifies proof of possession, and checks the
+/// complete PKCS #10 profile against the authenticated identity.
+fn parse_csr(pem_bytes: &[u8], expected_identity: &str) -> Result<Ed25519PublicKey, PolicyError> {
     let (pem_remainder, pem) = parse_x509_pem(pem_bytes).map_err(|_| {
         PolicyError::new(
             DenialReason::MalformedCsr,
@@ -317,17 +336,20 @@ fn parse_csr(pem_bytes: &[u8]) -> Result<CertificateSigningRequestParams, Policy
             "request has trailing DER data or an unsupported version",
         ));
     }
-    let public_algorithm = &raw.certification_request_info.subject_pki.algorithm;
-    if public_algorithm.algorithm != OID_SIG_ED25519
-        || public_algorithm.parameters.is_some()
-        || raw.signature_algorithm.algorithm != OID_SIG_ED25519
-        || raw.signature_algorithm.parameters.is_some()
-    {
+    let spki = &raw.certification_request_info.subject_pki;
+    let ed25519_identifiers = spki.algorithm.algorithm == OID_SIG_ED25519
+        && spki.algorithm.parameters.is_none()
+        && raw.signature_algorithm.algorithm == OID_SIG_ED25519
+        && raw.signature_algorithm.parameters.is_none();
+    let Some(key) = <[u8; 32]>::try_from(spki.subject_public_key.data.as_ref())
+        .ok()
+        .filter(|_| ed25519_identifiers)
+    else {
         return Err(PolicyError::new(
             DenialReason::PublicKey,
-            "request must use parameterless Ed25519 identifiers",
+            "request must use a parameterless 32-byte Ed25519 key",
         ));
-    }
+    };
     if raw
         .certification_request_info
         .subject
@@ -348,27 +370,32 @@ fn parse_csr(pem_bytes: &[u8]) -> Result<CertificateSigningRequestParams, Policy
         ));
     }
 
-    let der = rustls_pki_types::CertificateSigningRequestDer::from(pem.contents);
-    CertificateSigningRequestParams::from_der(&der).map_err(|error| map_csr_error(&error))
+    raw.verify_signature().map_err(|_| {
+        PolicyError::new(
+            DenialReason::CsrSignature,
+            "PKCS #10 proof-of-possession signature is invalid",
+        )
+    })?;
+    validate_requested_identity(&raw, expected_identity)?;
+    Ok(Ed25519PublicKey(key))
 }
 
 fn validate_requested_identity(
-    parsed: &CertificateSigningRequestParams,
+    raw: &X509CertificationRequest<'_>,
     expected_identity: &str,
 ) -> Result<(), PolicyError> {
-    if !parsed.params.key_usages.is_empty()
-        || !parsed.params.extended_key_usages.is_empty()
-        || parsed.params.is_ca != IsCa::NoCa
-        || parsed.params.subject_alt_names.len() != 1
-    {
+    let mut extensions = raw.requested_extensions().into_iter().flatten();
+    let (Some(ParsedExtension::SubjectAlternativeName(san)), None) =
+        (extensions.next(), extensions.next())
+    else {
         return Err(PolicyError::new(
             DenialReason::Extensions,
-            "only one URI subjectAltName may be requested",
+            "only one URI subjectAltName extension may be requested",
         ));
-    }
-    match parsed.params.subject_alt_names.as_slice() {
-        [SanType::URI(uri)] if uri.as_str() == expected_identity => Ok(()),
-        [SanType::URI(_)] => Err(PolicyError::new(
+    };
+    match san.general_names.as_slice() {
+        [GeneralName::URI(uri)] if *uri == expected_identity => Ok(()),
+        [GeneralName::URI(_)] => Err(PolicyError::new(
             DenialReason::Identity,
             "requested SPIFFE ID does not match the authenticated requester",
         )),
@@ -376,23 +403,6 @@ fn validate_requested_identity(
             DenialReason::Extensions,
             "subjectAltName must contain exactly one URI",
         )),
-    }
-}
-const fn map_csr_error(error: &rcgen::Error) -> PolicyError {
-    match error {
-        rcgen::Error::InvalidCertificationRequestSignature => PolicyError::new(
-            DenialReason::CsrSignature,
-            "PKCS #10 proof-of-possession signature is invalid",
-        ),
-        rcgen::Error::UnsupportedExtension => PolicyError::new(
-            DenialReason::Extensions,
-            "request contains an unsupported extension",
-        ),
-        rcgen::Error::UnsupportedSignatureAlgorithm => PolicyError::new(
-            DenialReason::PublicKey,
-            "request uses an unsupported signature algorithm",
-        ),
-        _ => PolicyError::new(DenialReason::MalformedCsr, "request cannot be parsed"),
     }
 }
 
@@ -412,9 +422,15 @@ fn service_account_parts(username: &str) -> Option<(&str, &str)> {
     Some((namespace, name))
 }
 
+/// Accepts `<domain>/<path>` where the path cannot alter the watch field selector.
 fn valid_signer_name(value: &str) -> bool {
     value.split_once('/').is_some_and(|(domain, path)| {
-        valid_dns_name(domain) && !path.is_empty() && path.len() <= 63
+        valid_dns_name(domain)
+            && !path.is_empty()
+            && path.len() <= 63
+            && path.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'/')
+            })
     })
 }
 
@@ -436,31 +452,4 @@ fn valid_dns_name(value: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DenialReason, map_csr_error};
-
-    #[test]
-    #[ntest_timeout::timeout(2_000)]
-    fn maps_every_rcgen_csr_error_class() {
-        for (error, expected) in [
-            (
-                rcgen::Error::InvalidCertificationRequestSignature,
-                DenialReason::CsrSignature,
-            ),
-            (rcgen::Error::UnsupportedExtension, DenialReason::Extensions),
-            (
-                rcgen::Error::UnsupportedSignatureAlgorithm,
-                DenialReason::PublicKey,
-            ),
-            (
-                rcgen::Error::CouldNotParseCertificationRequest,
-                DenialReason::MalformedCsr,
-            ),
-        ] {
-            assert_eq!(map_csr_error(&error).reason(), expected);
-        }
-    }
 }

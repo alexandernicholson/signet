@@ -20,7 +20,7 @@ Every mismatch is denied with a stable reason code. Signet never copies a reques
 
 The online signing CA is intentionally simple: a persistent Ed25519 key in one Kubernetes Secret. Protect that Secret with Kubernetes encryption at rest, tightly limit API access, and keep a protected offline backup. A compromised Signet pod or CA Secret can issue credentials within the CA's trust domain. Signet does not provide HSM integration, revocation, or automatic CA rotation.
 
-The supplied Deployment runs one replica deliberately. Multiple uncoordinated replicas could sign the same newly observed CSR before either status update becomes visible. Kubernetes restarts the single replica, and rolling updates use a surge pod, but there is no leader election.
+The supplied Deployment runs one replica deliberately. Multiple uncoordinated replicas could sign the same newly observed CSR before either status update becomes visible. Kubernetes restarts the single replica, and the Deployment uses the `Recreate` strategy so a rollout stops the old pod before starting the new one; there is no leader election. `signet run` and `signet agent` shut down gracefully on SIGTERM (as sent by Kubernetes) as well as SIGINT. The supplied NetworkPolicy denies all ingress to the signer pod; Kubernetes always allows traffic from the pod's own node, so kubelet health probes still work.
 
 See [RFC_PROFILE.md](RFC_PROFILE.md) for the complete certificate, request, and signer contract. The profile is backed by archived RFC Editor source texts and checksums in [`rfcs/`](rfcs/).
 
@@ -40,6 +40,8 @@ sequenceDiagram
     S->>K: Write signed leaf to status.certificate
     W->>K: Read issued certificate
 ```
+
+Signet reconciles up to 16 different CSRs at once. Events for one CSR are handled one at a time. Once Signet has written a certificate, it skips the watch event caused by its own approval, so an issued request is not reviewed or signed a second time. If the certificate write fails, that later event retries it. If a request passes policy but cannot be issued, for example because the leaf would outlive the CA, it is denied or failed with reason `Issuance` and the signer keeps running.
 
 Signet exposes only `/healthz` and `/readyz` for kubelet probes. Certificate operations use the Kubernetes API; there is no Signet service endpoint.
 

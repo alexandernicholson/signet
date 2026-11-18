@@ -14,9 +14,8 @@ futures = "0.3.31"
 httparse = "1.10.1"
 getrandom = "0.3.4"
 k8s-openapi = { version = "0.28.0", features = ["v1_32"] }
-kube = { version = "4.2.0", features = ["runtime"] }
-rcgen = { version = "0.14.8", features = ["x509-parser", "zeroize"] }
-rustls-pki-types = "1.15.1"
+kube = { version = "4.2.0", default-features = false, features = ["aws-lc-rs", "client", "runtime", "rustls-tls"] }
+rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser", "zeroize"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.17"
@@ -24,7 +23,7 @@ time = { version = "0.3.47", features = ["formatting", "parsing"] }
 tokio = { version = "1.49.0", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
-x509-parser = { version = "0.18.1", features = ["verify"] }
+x509-parser = { version = "0.18.1", features = ["verify-aws"] }
 zeroize = "1.9.0"
 
 [dev-dependencies]

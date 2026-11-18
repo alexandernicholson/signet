@@ -2,6 +2,26 @@
 
 All notable changes to Signet are documented here.
 
+## Unreleased
+
+### Security
+
+- A request that passes policy but cannot be issued (for example, a leaf that would outlive the CA) is now denied or failed with reason `Issuance`. Previously it stopped the signer, and the restarted signer stopped again on the same request.
+- Each health-probe connection now runs in its own task with a two-second deadline, so an idle client can no longer block kubelet probes. The server also waits for the complete request headers, so a probe split across TCP segments is no longer answered 404.
+- `signet run` and `signet agent` now shut down gracefully on SIGTERM as well as SIGINT.
+- The Deployment uses the `Recreate` strategy, so two signer pods never run at the same time during a rollout.
+- A NetworkPolicy now denies all ingress to the signer pod. Kubelet probes from the node are still allowed.
+- Base images are pinned by digest and CI actions by commit SHA.
+- The configured `signerName` path is limited to characters that cannot change the watch field selector.
+
+### Performance
+
+- Signet no longer reviews and signs every CSR a second time when its own approval comes back as a watch event. This also removes a third API write per CSR, which the API server rejected.
+- Up to 16 different CSRs are now reconciled at once. Events for one CSR are still applied in order.
+- Ed25519 operations now use aws-lc-rs instead of ring, in rcgen, x509-parser, and kube's TLS stack. ring is no longer compiled into Signet. It still appears in `Cargo.lock` as an optional dependency of `rustls-webpki` that no feature enables.
+- PKCS #10 requests are parsed once, and the verified key is used directly for signing.
+- Serial numbers are generated only when a certificate is issued, not for every watch event.
+
 ## 0.1.0 - 2026-07-22
 
 ### Added

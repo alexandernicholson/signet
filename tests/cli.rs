@@ -81,7 +81,7 @@ fn serve_agent_api(listener: &TcpListener, processor: &Processor) {
             created.metadata.name = Some("signet-cli-1".into());
             created.spec.username = Some("system:serviceaccount:workloads:example-app".into());
             let decision = processor
-                .evaluate(&created, OffsetDateTime::now_utc(), [11; 20])
+                .evaluate(&created, OffsetDateTime::now_utc(), || Ok([11; 20]))
                 .expect("evaluate agent CSR");
             let Decision::Issue {
                 certificate_pem, ..
@@ -462,7 +462,19 @@ fn run_reports_local_startup_failures() {
 #[cfg(unix)]
 #[test]
 #[ntest_timeout::timeout(2_000)]
-fn run_loads_the_ca_kubernetes_client_and_health_server() {
+fn run_stops_cleanly_on_sigint() {
+    run_stops_cleanly_on_signal("INT");
+}
+
+#[cfg(unix)]
+#[test]
+#[ntest_timeout::timeout(2_000)]
+fn run_stops_cleanly_on_sigterm() {
+    run_stops_cleanly_on_signal("TERM");
+}
+
+#[cfg(unix)]
+fn run_stops_cleanly_on_signal(signal_name: &str) {
     use std::{
         io::{Read, Write},
         net::{TcpListener, TcpStream},
@@ -540,9 +552,9 @@ fn run_loads_the_ca_kubernetes_client_and_health_server() {
     assert!(started, "issuer health server did not start");
 
     let signal = std::process::Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
+        .args([&format!("-{signal_name}"), &child.id().to_string()])
         .status()
-        .expect("send SIGINT");
+        .expect("send signal");
     assert!(signal.success());
     let deadline = Instant::now() + Duration::from_millis(1_500);
     loop {
@@ -552,7 +564,7 @@ fn run_loads_the_ca_kubernetes_client_and_health_server() {
         }
         if Instant::now() >= deadline {
             child.kill().expect("kill issuer");
-            panic!("issuer did not stop after SIGINT");
+            panic!("issuer did not stop after SIG{signal_name}");
         }
         thread::sleep(Duration::from_millis(25));
     }

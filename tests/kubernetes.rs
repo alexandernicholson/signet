@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used)]
 
+mod support;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -12,9 +14,14 @@ use std::{
 use bytes::Bytes;
 use http::{Request, Response};
 use http_body_util::{BodyExt, Full};
-use k8s_openapi::api::certificates::v1::{
-    CertificateSigningRequest, CertificateSigningRequestCondition,
+use k8s_openapi::{
+    ByteString,
+    api::certificates::v1::{
+        CertificateSigningRequest, CertificateSigningRequestCondition,
+        CertificateSigningRequestStatus,
+    },
 };
+use kube::runtime::watcher::Event;
 use kube::{Client, client::Body};
 use serde_json::Value;
 use signet::{
@@ -25,8 +32,7 @@ use signet::{
 use time::OffsetDateTime;
 use tower::service_fn;
 
-const SIGNER_NAME: &str = "example.com/signet";
-const TRUST_DOMAIN: &str = "example.com";
+use support::{SIGNER_NAME, TRUST_DOMAIN};
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -34,6 +40,82 @@ struct CapturedRequest {
     body: Value,
 }
 
+type CsrEvent = Result<Event<CertificateSigningRequest>, std::io::Error>;
+
+/// A writer whose API calls record their path and then wait for a gate permit.
+fn gated_writer() -> (
+    KubernetesWriter,
+    Arc<Mutex<Vec<String>>>,
+    Arc<tokio::sync::Semaphore>,
+) {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (service_capture, service_gate) = (Arc::clone(&captured), Arc::clone(&gate));
+    let response = serde_json::to_vec(&csr()).expect("serialize mock CSR");
+    let service = service_fn(move |request: Request<Body>| {
+        let capture = Arc::clone(&service_capture);
+        let gate = Arc::clone(&service_gate);
+        let response = response.clone();
+        async move {
+            capture
+                .lock()
+                .expect("request capture")
+                .push(request.uri().path().to_owned());
+            gate.acquire().await.expect("open gate").forget();
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(response)))
+                    .expect("mock response"),
+            )
+        }
+    });
+    (
+        KubernetesWriter::new(Client::new(service, "default")),
+        captured,
+        gate,
+    )
+}
+
+fn pending(name: &str, request: &[u8]) -> CertificateSigningRequest {
+    let mut csr = CertificateSigningRequest::default();
+    csr.metadata.name = Some(name.into());
+    csr.metadata.uid = Some(format!("uid-{name}"));
+    csr.spec.signer_name = SIGNER_NAME.into();
+    csr.spec.username = Some(support::USERNAME.into());
+    csr.spec.usages = Some(support::USAGES.iter().map(ToString::to_string).collect());
+    csr.spec.expiration_seconds = Some(86_400);
+    csr.spec.request = ByteString(request.to_vec());
+    csr
+}
+
+fn with_status(
+    mut csr: CertificateSigningRequest,
+    certificate: Option<&[u8]>,
+) -> CertificateSigningRequest {
+    csr.status = Some(CertificateSigningRequestStatus {
+        certificate: certificate.map(|bytes| ByteString(bytes.to_vec())),
+        conditions: Some(vec![CertificateSigningRequestCondition {
+            status: "True".into(),
+            type_: "Approved".into(),
+            ..CertificateSigningRequestCondition::default()
+        }]),
+    });
+    csr
+}
+
+async fn wait_for_requests(captured: &Mutex<Vec<String>>, count: usize) {
+    while captured.lock().expect("request capture").len() < count {
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn settle() {
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+}
 fn csr() -> CertificateSigningRequest {
     let mut csr = CertificateSigningRequest::default();
     csr.metadata.name = Some("workload-7".into());
@@ -284,4 +366,67 @@ async fn watcher_setup_can_be_cancelled_before_contacting_kubernetes() {
     )
     .await
     .expect("cancel watcher");
+}
+
+#[tokio::test]
+#[ntest_timeout::timeout(2_000)]
+async fn runtime_reconciles_csrs_concurrently_and_skips_its_own_approval_echoes() {
+    let (writer, captured, gate) = gated_writer();
+    let ready = Arc::new(AtomicBool::new(false));
+    let (events, stream) = futures::channel::mpsc::unbounded::<CsrEvent>();
+    let first = pending("first", &support::valid_csr());
+    let second = pending("second", &support::valid_csr());
+    let malformed = pending("malformed", b"not a CSR");
+    let send = |event: Event<CertificateSigningRequest>| {
+        events.unbounded_send(Ok(event)).expect("send watch event");
+    };
+
+    let driver = async {
+        send(Event::Apply(first.clone()));
+        send(Event::Apply(second.clone()));
+        send(Event::Apply(malformed.clone()));
+        // No API call can finish yet, so all three are in flight together.
+        wait_for_requests(&captured, 3).await;
+
+        // Events for CSRs already in flight are queued until they finish.
+        send(Event::Apply(with_status(first.clone(), None)));
+        send(Event::Apply(malformed.clone()));
+        settle().await;
+        gate.add_permits(64);
+        wait_for_requests(&captured, 6).await;
+
+        send(Event::Apply(with_status(second.clone(), None)));
+        send(Event::Apply(with_status(first.clone(), Some(b"issued"))));
+        send(Event::Delete(with_status(second.clone(), Some(b"issued"))));
+        send(Event::Init);
+        send(Event::InitDone);
+        events.close_channel();
+    };
+    let (result, ()) = tokio::join!(
+        run_events(
+            stream,
+            writer,
+            processor(),
+            Arc::clone(&ready),
+            std::future::pending(),
+        ),
+        driver,
+    );
+    result.expect("finite event stream");
+
+    assert!(ready.load(Ordering::Acquire));
+    let mut paths = captured.lock().expect("request capture").clone();
+    paths.sort();
+    let prefix = "/apis/certificates.k8s.io/v1/certificatesigningrequests";
+    assert_eq!(
+        paths,
+        [
+            format!("{prefix}/first/approval"),
+            format!("{prefix}/first/status"),
+            format!("{prefix}/malformed/approval"),
+            format!("{prefix}/malformed/approval"),
+            format!("{prefix}/second/approval"),
+            format!("{prefix}/second/status"),
+        ]
+    );
 }

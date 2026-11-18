@@ -7,7 +7,7 @@ use std::time::Duration;
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use serde_json::json;
 use signet::{
-    authority::{BootstrapConfig, SigningAuthority, bootstrap},
+    authority::{AuthorityError, BootstrapConfig, SigningAuthority, bootstrap},
     controller::{Decision, Processor},
     policy::{DenialReason, Policy, ServiceAccount},
 };
@@ -84,7 +84,7 @@ fn approves_and_signs_a_new_valid_request() {
     );
 
     let decision = processor(now)
-        .evaluate(&csr, now, [7; 20])
+        .evaluate(&csr, now, || Ok([7; 20]))
         .expect("evaluate");
     let Decision::Issue {
         approve,
@@ -119,7 +119,7 @@ fn signs_an_already_approved_request_without_reapproving() {
     );
 
     let Decision::Issue { approve, .. } = processor(now)
-        .evaluate(&csr, now, [8; 20])
+        .evaluate(&csr, now, || Ok([8; 20]))
         .expect("evaluate")
     else {
         panic!("expected issuance");
@@ -142,7 +142,7 @@ fn denies_an_invalid_request_with_a_stable_reason() {
     );
 
     let decision = processor(now)
-        .evaluate(&csr, now, [9; 20])
+        .evaluate(&csr, now, || Ok([9; 20]))
         .expect("evaluate");
     assert!(matches!(
         decision,
@@ -172,12 +172,60 @@ fn marks_an_approved_but_invalid_request_failed() {
     );
     assert!(matches!(
         processor(now)
-            .evaluate(&csr, now, [10; 20])
+            .evaluate(&csr, now, || Ok([10; 20]))
             .expect("evaluate"),
         Decision::Fail {
             reason: DenialReason::ServiceAccount,
             ..
         }
+    ));
+}
+
+#[test]
+#[ntest_timeout::timeout(2_000)]
+fn issuance_failures_reject_the_request_instead_of_stopping_the_signer() {
+    let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+    let processor = processor(now);
+    let after_ca_expiry = now + time::Duration::days(400);
+    let pending = object(
+        "outlives-ca",
+        SIGNER_NAME,
+        &valid_csr(),
+        USERNAME,
+        &json!([]),
+        &serde_json::Value::Null,
+    );
+    assert!(matches!(
+        processor
+            .evaluate(&pending, after_ca_expiry, || Ok([12; 20]))
+            .expect("evaluate"),
+        Decision::Deny {
+            reason: DenialReason::Issuance,
+            ..
+        }
+    ));
+
+    let approved = object(
+        "approved-outlives-ca",
+        SIGNER_NAME,
+        &valid_csr(),
+        USERNAME,
+        &json!([{"type": "Approved", "status": "True", "reason": "R", "message": "m"}]),
+        &serde_json::Value::Null,
+    );
+    assert!(matches!(
+        processor
+            .evaluate(&approved, after_ca_expiry, || Ok([13; 20]))
+            .expect("evaluate"),
+        Decision::Fail {
+            reason: DenialReason::Issuance,
+            ..
+        }
+    ));
+
+    assert!(matches!(
+        processor.evaluate(&pending, now, || Err(AuthorityError::Random)),
+        Err(AuthorityError::Random)
     ));
 }
 
@@ -197,7 +245,9 @@ fn ignores_other_signers_completed_and_denied_requests() {
         &serde_json::Value::Null,
     );
     assert!(matches!(
-        processor.evaluate(&other, now, [1; 20]).expect("other"),
+        processor
+            .evaluate(&other, now, || Ok([1; 20]))
+            .expect("other"),
         Decision::Ignore
     ));
 
@@ -211,7 +261,7 @@ fn ignores_other_signers_completed_and_denied_requests() {
     );
     assert!(matches!(
         processor
-            .evaluate(&completed, now, [2; 20])
+            .evaluate(&completed, now, || Ok([2; 20]))
             .expect("completed"),
         Decision::Ignore
     ));
@@ -231,7 +281,9 @@ fn ignores_other_signers_completed_and_denied_requests() {
         &serde_json::Value::Null,
     );
     assert!(matches!(
-        processor.evaluate(&denied, now, [3; 20]).expect("denied"),
+        processor
+            .evaluate(&denied, now, || Ok([3; 20]))
+            .expect("denied"),
         Decision::Ignore
     ));
 }

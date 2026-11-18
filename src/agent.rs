@@ -984,7 +984,7 @@ mod tests {
                     created.spec.username =
                         Some("system:serviceaccount:workloads:example-app".into());
                     let decision = issuer
-                        .evaluate(&created, OffsetDateTime::now_utc(), [7; 20])
+                        .evaluate(&created, OffsetDateTime::now_utc(), || Ok([7; 20]))
                         .expect("evaluate CSR");
                     let Decision::Issue {
                         certificate_pem: certificate,
